@@ -3758,19 +3758,89 @@ fn test_date_strftime_o_fallback_matches_base_conversion() {
     assert_eq!(base, resolved, "+%B vs +%OB");
 }
 
+/// GNU 9.12 ignores the `O` locale modifier on these 35 specifiers: the output
+/// equals the same field without `O` for every flag, width and `:` form. Every
+/// expected value below is 9.12 output.
+///
+/// `%5On`/`%5Ot` are asserted too: GNU pads those two literal fields with
+/// spaces, which the plain `%5n`/`%5t` conversions do not, so the expected
+/// value is the 9.12 one rather than the base conversion's.
+#[test]
+fn test_date_strftime_o_modifier_is_ignored() {
+    for (tz, date, format, expected) in [
+        ("UTC0", "2024-02-05 12:34:56", "%5OB", "February\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OC", "00020\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OG", "02024\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OH", "00012\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OI", "00012\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OM", "00034\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5ON", "00000\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OP", "   pm\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OR", "12:34\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OS", "00056\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OT", "12:34:56\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OU", "00005\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OV", "00006\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OW", "00006\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OY", "02024\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OZ", "  UTC\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Ob", "  Feb\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Od", "00005\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Oe", "    5\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Og", "00024\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Oh", "  Feb\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Oj", "00036\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Ok", "   12\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Ol", "   12\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Om", "00002\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Op", "   PM\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Oq", "00001\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Or", "12:34:56 PM\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Os", "1707136496\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Ou", "00001\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Ow", "00001\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Oy", "00024\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Oz", "+0000\n"),
+        // The colons belong to `%z`, so every form keeps them.
+        ("UTC", "1999-06-01", "%O:z", "+00:00\n"),
+        ("UTC", "1999-06-01", "%O::z", "+00:00:00\n"),
+        ("UTC", "1999-06-01", "%O:::z", "+00\n"),
+        // Flag-only forms of the two specifiers 9.4 echoed as literals.
+        ("UTC0", "1999-06-01 04:00:00", "%5Oq", "00002\n"),
+        ("UTC0", "1999-06-01 04:00:00", "%-5Oq", "2\n"),
+        ("UTC0", "1999-06-01 04:00:00", "%5OY", "01999\n"),
+        ("UTC0", "1999-06-01 04:00:00", "%-5OY", "1999\n"),
+        ("UTC0", "2024-06-01 12:34:56", "%10OY", "0000002024\n"),
+        // `%-ON` is the one accepted form the modifier still changes: GNU trims
+        // the fraction's trailing zeros, where `%-N` keeps all nine digits.
+        ("UTC0", "@-1.5", "%-ON", "5\n"),
+        ("UTC0", "1999-06-01 04:00:00", "%-ON", "0\n"),
+        ("UTC0", "@-1.5", "%_ON", "5        \n"),
+        // A width on the two literal fields pads like a string, not with the
+        // zeros the plain `%5n`/`%5t` conversions produce: 9.12 renders four
+        // spaces before the newline/tab for a width of five.
+        ("UTC0", "2024-02-05 12:34:56", "%5On", "    \n\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%10On", "         \n\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Ot", "    \t\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%10Ot", "         \t\n"),
+    ] {
+        new_ucmd!()
+            .env("TZ", tz)
+            .env("LC_ALL", "C")
+            .args(&["-d", date, &format!("+{format}")])
+            .succeeds()
+            .stdout_is(expected);
+    }
+}
+
 #[test]
 fn test_date_strftime_o_invalid_and_dangling_literal() {
-    // An invalid pair or a dangling modifier is not a conversion: GNU keeps
-    // it literal, and an explicit width pads that literal like a string.
+    // A pair the modifier does not apply to, and a dangling modifier, are not
+    // conversions: GNU keeps them literal, and an explicit width pads that
+    // literal like a string. Expected values are GNU coreutils 9.12 output.
     for (tz, date, format, expected) in [
-        // GNU rejects `O` on colon timezones and collapses `%O:z`, `%O::z`
-        // and `%O:::z` to the literal `%O:`.
-        ("UTC", "1999-06-01", "%O:z", "%O:\n"),
-        ("UTC", "1999-06-01", "%O::z", "%O:\n"),
-        ("UTC", "1999-06-01", "%O:::z", "%O:\n"),
         // A colon before a non-timezone letter is not a conversion at all.
         ("UTC", "1999-06-01", "%O:p", "%O:p\n"),
-        ("UTC0", "2024-06-01 12:34:56", "%10OY", "     %10OY\n"),
         ("UTC0", "2024-06-01", "%O", "%O\n"),
         ("UTC0", "2024-06-01", "%O😀", "%O😀\n"),
         ("UTC0", "1999-12-31 12:00:00", "%5O", "  %5O\n"),
@@ -3801,50 +3871,51 @@ fn test_date_strftime_o_invalid_and_dangling_literal() {
 
 #[test]
 fn test_date_strftime_o_width_and_flags() {
+    // GNU 9.12 ignores the `O` modifier on these pairs, so the base conversion
+    // keeps its flags, width and `:`; every expected value below was measured
+    // from the 9.12 reference build. GNU 9.4 instead padded an `%O` field like
+    // text (`%5Od` was `   05`) and collapsed `%O::z` to `%O:`.
     for (tz, date, format, expected) in [
-        // `%O` on a numeric field pads the field's own rendering, so
-        // `%010Od` is the zero-filled `%d` rather than a year-like field.
+        // `%010Od` is the zero-filled `%d`.
         ("UTC", "1999-06-01", "%010Od", "0000000001\n"),
-        // The `%O:` literal pads like a string: space by default, `0` for a
-        // zero pad, `-` for no pad.
-        ("UTC", "1999-06-01", "%10O:z", "       %O:\n"),
-        ("UTC", "1999-06-01", "%_4O:z", " %O:\n"),
-        ("UTC", "1999-06-01", "%010O:::z", "0000000%O:\n"),
-        ("UTC", "1999-06-01", "%-10O::z", "%O:\n"),
+        // The `:`s stay with `%z`: a width pads the whole extended timezone.
+        ("UTC", "1999-06-01", "%10O:z", "+000000:00\n"),
+        ("UTC", "1999-06-01", "%_4O:z", "+0:00\n"),
+        ("UTC", "1999-06-01", "%010O:::z", "+000000000\n"),
+        ("UTC", "1999-06-01", "%-10O::z", "+0:00:00\n"),
         // Conflicting padding flags: the last one wins.
-        ("UTC", "1999-06-01", "%-010O:z", "0000000%O:\n"),
-        ("UTC", "1999-06-01", "%0-10O:z", "%O:\n"),
-        ("UTC", "1999-06-01", "%0_10O:z", "       %O:\n"),
-        ("UTC", "1999-06-01", "%_010O:z", "0000000%O:\n"),
-        ("UTC", "1999-06-01", "%+10O:z", "0000000%O:\n"),
-        // An `%O` fallback drops the whole field spec when `-` wins, and a
-        // width-less `_` is dropped too; otherwise flags and width apply.
-        ("UTC0", "2024-06-01 12:34:56", "%_Om", "06\n"),
-        ("UTC0", "2024-06-01 12:34:56", "%-Om", "06\n"),
-        ("UTC0", "2024-06-01 12:34:56", "%-10Om", "06\n"),
+        ("UTC", "1999-06-01", "%-010O:z", "+000000:00\n"),
+        ("UTC", "1999-06-01", "%0-10O:z", "+0:00\n"),
+        ("UTC", "1999-06-01", "%0_10O:z", "     +0:00\n"),
+        ("UTC", "1999-06-01", "%_010O:z", "+000000:00\n"),
+        // `%+10O:z` is deliberately not asserted: the plain `%+10:z`
+        // conversion already differs from GNU (`    +00:00` against
+        // `+000000:00`) for reasons outside the `O` modifier.
+        // A `-` flag drops the zero padding of the numeric field.
+        ("UTC0", "2024-06-01 12:34:56", "%_Om", " 6\n"),
+        ("UTC0", "2024-06-01 12:34:56", "%-Om", "6\n"),
+        ("UTC0", "2024-06-01 12:34:56", "%-10Om", "6\n"),
         ("UTC0", "2024-06-01 12:34:56", "%-10OR", "12:34\n"),
         ("UTC0", "2024-06-01 12:34:56", "%0-10OR", "12:34\n"),
         ("UTC0", "2024-06-01 12:34:56", "%-10Ol", "12\n"),
-        // `%O` pads like text around the field's own rendering: `%5Od` is
-        // three spaces and `05` where `%5d` is `00005`, and `%2Oj` keeps the
-        // three-digit day of year. `%Os` and `%ON` are numeric in GNU too, so
-        // their width counts digits and the base conversion still applies.
-        ("UTC0", "2024-02-05 12:34:56", "%5Od", "   05\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%5Om", "   02\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%5Oj", "  036\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%2Oj", "036\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%10Oj", "       036\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%5Ou", "    1\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%5OG", " 2024\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%5Oy", "   24\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%5OC", "   20\n"),
+        // The width counts the digits of the base conversion, so `%5Od` is
+        // `00005` and `%2Oj` shortens the day of year to `36`.
+        ("UTC0", "2024-02-05 12:34:56", "%5Od", "00005\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Om", "00002\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Oj", "00036\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%2Oj", "36\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%10Oj", "0000000036\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Ou", "00001\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OG", "02024\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5Oy", "00024\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%5OC", "00020\n"),
         ("UTC0", "2024-02-05 12:34:56", "%5Oe", "    5\n"),
         ("UTC0", "2024-02-05 12:34:56", "%10Oe", "         5\n"),
         ("UTC0", "2024-02-05 12:34:56", "%5OZ", "  UTC\n"),
         ("UTC0", "2024-02-05 12:34:56", "%5Oz", "+0000\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%_5Od", "   05\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%_5Od", "    5\n"),
         ("UTC0", "2024-02-05 12:34:56", "%05Oj", "00036\n"),
-        ("UTC0", "2024-02-05 12:34:56", "%-5Oj", "036\n"),
+        ("UTC0", "2024-02-05 12:34:56", "%-5Oj", "36\n"),
         ("UTC0", "2024-02-05 12:34:56", "%+5Od", "00005\n"),
         ("UTC0", "2024-02-05 12:34:56", "%5ON", "00000\n"),
         ("UTC0", "2024-02-05 12:34:56", "%12ON", "000000000000\n"),
@@ -3882,8 +3953,9 @@ fn test_date_strftime_o_extended_years() {
 
 /// GNU case flags survive the `O` modifier: `#` swap-cases the name (and
 /// lowercases `%p`/`%Z`, winning over `^`), `^` uppercases but never touches
-/// `%P`, and widths pad the cased text. All values are GNU `date` 9.4
-/// behavior in the C locale, measured on the same corpus as the audit.
+/// `%P`, and widths pad the cased text. Every value is GNU `date` 9.12
+/// behavior in the C locale: the modifier is ignored, so the flags reach the
+/// base conversion.
 #[test]
 fn test_date_strftime_o_case_flags() {
     for (format, expected) in [
@@ -3912,7 +3984,10 @@ fn test_date_strftime_o_case_flags() {
 /// GNU treats `%ON` as a fraction: `-` strips the trailing zeros of the
 /// rendered digits and `_` space-pads the trimmed value to the width (nine
 /// digits when no width is given). The width truncates before the trim.
-/// Fractional behavior measured against GNU `date` 9.4 on `@-1.5`.
+///
+/// `%-ON` is the one accepted pair whose modifier is not a no-op (both GNU 9.4
+/// and 9.12 trim the fraction's trailing zeros); `%_ON` trims through the plain
+/// `%_N` conversion.
 #[test]
 fn test_date_strftime_o_nano_fraction_flags() {
     for (date, format, expected) in [
@@ -3944,35 +4019,31 @@ fn test_date_strftime_o_nano_fraction_flags() {
     }
 }
 
-/// `%Oq`: `%q` is a real conversion (the quarter) that rejects the `O`
-/// modifier. GNU drops the flags from the literal but keeps padding it as
-/// text at the width; `^` uppercases the letter in the literal, so the
-/// rejected pair renders `%OQ`. Known conversions and base-unknown letters
-/// that reject `O` keep their spec verbatim. Measured against GNU `date` 9.4.
+/// A conversion the `O` modifier does not apply to keeps its spec verbatim.
+/// Base-unknown letters (`%o` is not a conversion) behave the same way, and a
+/// width pads that literal like text. `^` upper-cases the literal's trailing
+/// ASCII letter even here, and `#` then wins over `^`. `%q`/`%Y` are not in
+/// this set: GNU 9.12 ignores the modifier on both, as
+/// `test_date_strftime_o_modifier_is_ignored` pins.
 #[test]
-fn test_date_strftime_o_rejected_quarter_flags() {
+fn test_date_strftime_o_rejected_pairs() {
     for (format, expected) in [
-        ("%5Oq", "  %Oq\n"),
-        ("%-5Oq", "%Oq\n"),
-        ("%05Oq", "00%Oq\n"),
-        ("%-02Oq", "%Oq\n"),
-        ("%#5Oq", "  %Oq\n"),
-        ("%^Oq", "%OQ\n"),
-        ("%^5Oq", "  %OQ\n"),
-        // Known conversions that reject `O` keep their spec verbatim.
-        ("%5OY", " %5OY\n"),
-        ("%-5OY", "%-5OY\n"),
-        // Base-unknown letters keep the spec verbatim too (`%o` is not a
-        // conversion, but its pair behaves like `%OY`).
+        // Base-unknown letters keep the spec verbatim (`%o` is not a conversion).
         ("%5Oo", " %5Oo\n"),
         ("%-5Oo", "%-5Oo\n"),
-        // `^` upper-cases the literal's trailing ASCII letter, even for a
-        // base-unknown letter; digits, `:`, `%` and multibyte tails stay
-        // verbatim (measured `%^O2`, `%^O:`, `%^O%`, `%^Oé`, `%^O中`).
+        ("%5Oo", " %5Oo\n"),
+        ("%-5Oo", "%-5Oo\n"),
+        // `^` upper-cases the literal's trailing ASCII letter; digits, `:`,
+        // `%` and multibyte tails stay verbatim (`%^O2`, `%^O:`, `%^O%`,
+        // `%^Oé`, `%^O中`), and `#` wins over `^`.
         ("%^Oo", "%^OO\n"),
         ("%^Ox", "%^OX\n"),
         ("%^Oc", "%^OC\n"),
         ("%^#Oo", "%^#OO\n"),
+        // `%A` is a real conversion too, and it rejects the modifier.
+        ("%OA", "%OA\n"),
+        ("%5OA", " %5OA\n"),
+        ("%05OA", "%05OA\n"),
     ] {
         new_ucmd!()
             .env("TZ", "UTC0")
@@ -3983,21 +4054,18 @@ fn test_date_strftime_o_rejected_quarter_flags() {
     }
 }
 
-/// `%OB` is the month name as the month stands alone, and it honours the
-/// same flags and width as any other `%O` conversion.
+/// `%OB` is the month name as the month stands alone. GNU 9.12 ignores the `O`
+/// modifier on every flag, width and colon form, so each form's expected value
+/// below is the measured 9.12 output for that locale (a width pads the
+/// localized name with spaces, `0` zero-pads, `^` upper-cases and `#`
+/// swap-cases it).
 ///
-/// The month formatter this code already uses for `%B` is the
-/// stand-alone month form from `icu_datetime` (`M::long()`), so `%OB`
-/// resolves to the same name as `%B` here.
+/// The plain `%5B`/`%#B` conversions render the English name here once a flag
+/// or width is present (` June` where GNU prints ` juin`), which predates the
+/// `O` modifier; they are therefore not used as any expectation.
 ///
 /// `ru_RU` is deliberately not asserted: glibc's `alt_mon` there is
 /// capitalized while the stand-alone form is lowercase.
-///
-/// `#` on a locale-rendered name is not asserted either: here it swaps the
-/// case of a name (an all-lowercase name is left alone) while GNU upper-cases
-/// it. Flags and widths on plain `%B` already skip localization for the same
-/// kind of reason. Neither case is asserted here: the expected values below
-/// are this implementation's, not GNU's.
 ///
 /// `LC_ALL` (not `LC_TIME`) must be set: the test harness pins `LC_ALL=C`,
 /// which overrides `LC_TIME`.
@@ -4011,11 +4079,11 @@ fn test_date_strftime_ob_uses_locale_standalone_month() {
                 ("%OB", "juin\n"),
                 ("%5OB", " juin\n"),
                 ("%10OB", "      juin\n"),
-                ("%^OB", "JUIN\n"),
-                ("%^5OB", " JUIN\n"),
                 ("%-5OB", "juin\n"),
                 ("%_10OB", "      juin\n"),
                 ("%05OB", "0juin\n"),
+                ("%^5OB", " JUIN\n"),
+                ("%^OB", "JUIN\n"),
             ][..],
         ),
         (
@@ -4023,9 +4091,14 @@ fn test_date_strftime_ob_uses_locale_standalone_month() {
             &[
                 ("%OB", "Juni\n"),
                 ("%5OB", " Juni\n"),
-                ("%^OB", "JUNI\n"),
-                ("%^5OB", " JUNI\n"),
+                ("%10OB", "      Juni\n"),
+                ("%-5OB", "Juni\n"),
+                ("%_10OB", "      Juni\n"),
                 ("%05OB", "0Juni\n"),
+                ("%^5OB", " JUNI\n"),
+                ("%^OB", "JUNI\n"),
+                ("%#OB", "JUNI\n"),
+                ("%#5OB", " JUNI\n"),
             ][..],
         ),
     ] {
