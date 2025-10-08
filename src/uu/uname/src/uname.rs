@@ -28,6 +28,24 @@ pub mod options {
     pub static OS: &str = "operating-system";
 }
 
+/// Map machine architecture string to processor type.
+///
+/// This provides GNU coreutils-compatible processor type mappings from machine
+/// architecture strings. Previously returned "unknown" causing regressions in
+/// packages like kdump-tools.
+///
+/// Fixes: <https://github.com/uutils/coreutils/issues/8659>
+fn map_processor(machine: &str) -> String {
+    match machine {
+        "arm64" => "arm".to_string(),
+        "aarch64" => "aarch64".to_string(),
+        "x86_64" | "amd64" => "x86_64".to_string(),
+        "i386" | "i486" | "i586" | "i686" => "i686".to_string(),
+        "armv7l" | "armv6l" | "armv8l" => "arm".to_string(),
+        _ => machine.to_string(),
+    }
+}
+
 pub struct UNameOutput {
     pub kernel_name: Option<OsString>,
     pub nodename: Option<OsString>,
@@ -84,9 +102,9 @@ impl UNameOutput {
 
         let os = (opts.os || opts.all).then(|| uname.osname().to_owned());
 
-        // This option is unsupported on modern Linux systems
-        // See: https://lists.gnu.org/archive/html/bug-coreutils/2005-09/msg00063.html
-        let processor = opts.processor.then(|| translate!("uname-unknown").into());
+        let processor = opts
+            .processor
+            .then(|| map_processor(&uname.machine().to_string_lossy()).into());
 
         // This option is unsupported on modern Linux systems
         // See: https://lists.gnu.org/archive/html/bug-coreutils/2005-09/msg00063.html
