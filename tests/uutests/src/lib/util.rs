@@ -2977,6 +2977,8 @@ pub fn check_coreutil_version(
                     Ok(format!("{UUTILS_INFO}: version for the reference coreutil '{util_name}' is higher than expected; expected: {version_expected}, found: {version_found}"))
                     } else {
                     Err(format!("{UUTILS_WARNING}: version for the reference coreutil '{util_name}' does not match; expected: {version_expected}, found: {version_found}")) }
+                } else if s.contains("(uutils coreutils)") {
+                    Err(format!("{UUTILS_WARNING}: uutils coreutils detected as system coreutils for '{util_name}'. GNU coreutils comparison tests require GNU coreutils in PATH. Install GNU coreutils or set PATH to prioritize GNU tools."))
                 } else {
                     Err(format!("{UUTILS_WARNING}: no coreutils version string found for reference coreutils '{util_name} --version'"))
                 }
