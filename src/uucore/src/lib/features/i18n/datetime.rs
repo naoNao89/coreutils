@@ -38,6 +38,7 @@ use icu_datetime::FixedCalendarDateTimeFormatter;
 use icu_datetime::fieldsets::{YMD, YMDT};
 use icu_locale::Locale;
 use icu_time::{DateTime, Time};
+use writeable::Writeable;
 
 use crate::i18n::{DEFAULT_LOCALE, get_time_locale};
 
@@ -162,6 +163,59 @@ pub fn format_ls_time(timestamp: SystemTime, is_recent: bool) -> String {
         format_with_icu_recent(timestamp, locale)
     } else {
         format_with_icu_older(timestamp, locale)
+    }
+}
+
+/// Write a timestamp for `ls` output directly into the provided buffer.
+/// This avoids intermediate String allocation on the hot path.
+pub fn write_ls_time(out: &mut Vec<u8>, timestamp: SystemTime, is_recent: bool) {
+    let (locale, _source) = get_time_locale();
+
+    if locale == &DEFAULT_LOCALE {
+        // Fast POSIX path: reuse existing formatter and append.
+        let s = format_posix_time(timestamp, is_recent);
+        out.extend_from_slice(s.as_bytes());
+        return;
+    }
+
+    // Use ICU4X formatters for full locale support; stream into out.
+    let dt = system_time_to_icu_datetime(timestamp);
+    struct WriteVec<'a>(&'a mut Vec<u8>);
+    impl core::fmt::Write for WriteVec<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            self.0.extend_from_slice(s.as_bytes());
+            Ok(())
+        }
+    }
+
+    if is_recent {
+        RECENT_FORMATTER.with(|formatter_cell| {
+            let mut formatter_opt = formatter_cell.borrow_mut();
+            if formatter_opt.is_none() {
+                *formatter_opt = Some(init_datetime_formatter(locale));
+            }
+            let mut w = WriteVec(out);
+            formatter_opt
+                .as_ref()
+                .expect("BUG: formatter should be initialized")
+                .format(&dt)
+                .write_to(&mut w)
+                .expect("BUG: write to buffer failed");
+        });
+    } else {
+        OLDER_FORMATTER.with(|formatter_cell| {
+            let mut formatter_opt = formatter_cell.borrow_mut();
+            if formatter_opt.is_none() {
+                *formatter_opt = Some(init_date_formatter(locale));
+            }
+            let mut w = WriteVec(out);
+            formatter_opt
+                .as_ref()
+                .expect("BUG: formatter should be initialized")
+                .format(&dt)
+                .write_to(&mut w)
+                .expect("BUG: write to buffer failed");
+        });
     }
 }
 
