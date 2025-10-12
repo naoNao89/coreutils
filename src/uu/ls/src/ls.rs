@@ -3005,8 +3005,9 @@ fn display_date(
         TimeStyle::Locale => {
             // Use ICU4X locale-aware formatting
             let is_recent = state.recent_time_range.contains(&time);
-            let formatted = uucore::i18n::datetime::format_ls_time(time, is_recent);
-            out.extend(formatted.as_bytes());
+            // Reserve a small amount to reduce reallocations in hot paths.
+            out.reserve(32);
+            uucore::i18n::datetime::write_ls_time(out, time, is_recent);
             Ok(())
         }
         TimeStyle::Format { recent, older } => {
