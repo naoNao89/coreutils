@@ -31,6 +31,7 @@
 //! ```
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use icu_calendar::{Date, Gregorian};
@@ -40,7 +41,7 @@ use icu_locale::Locale;
 use icu_time::{DateTime, Time};
 use writeable::Writeable;
 
-use crate::i18n::{DEFAULT_LOCALE, get_time_locale};
+use crate::i18n::{DEFAULT_LOCALE, UEncoding, get_time_locale};
 
 /// Seconds in a day
 const SECS_PER_DAY: i64 = 86_400;
@@ -66,16 +67,60 @@ type LsDateTimeFormatter = FixedCalendarDateTimeFormatter<Gregorian, YMDT>;
 /// Type alias for date-only formatter (shows year, not time)
 type LsDateFormatter = FixedCalendarDateTimeFormatter<Gregorian, YMD>;
 
-// Thread-local cache for recent file formatter (date + time).
-// Uses `thread_local!` because ICU formatters contain `Rc<Box<[u8]>>` which is
-// not `Send`/`Sync`. This is acceptable for single-threaded utilities.
-thread_local! {
-    static RECENT_FORMATTER: RefCell<Option<LsDateTimeFormatter>> = const { RefCell::new(None) };
+/// Maximum size of the timestamp format cache (LRU)
+const CACHE_SIZE: usize = 16;
+
+/// Cached formatted timestamp entry
+#[derive(Clone)]
+struct CacheEntry {
+    timestamp: SystemTime,
+    is_recent: bool,
+    formatted: Vec<u8>,
 }
 
-// Thread-local cache for older file formatter (date + year).
+/// Thread-local state for formatters and cache
+struct FormatterState {
+    locale: Option<&'static (Locale, UEncoding)>,
+    recent_formatter: Option<LsDateTimeFormatter>,
+    older_formatter: Option<LsDateFormatter>,
+    cache: VecDeque<CacheEntry>,
+}
+
+impl FormatterState {
+    const fn new() -> Self {
+        Self {
+            locale: None,
+            recent_formatter: None,
+            older_formatter: None,
+            cache: VecDeque::new(),
+        }
+    }
+
+    fn get_cached(&mut self, timestamp: SystemTime, is_recent: bool) -> Option<&[u8]> {
+        // Check if we have this exact timestamp cached
+        self.cache
+            .iter()
+            .find(|e| e.timestamp == timestamp && e.is_recent == is_recent)
+            .map(|e| e.formatted.as_slice())
+    }
+
+    fn cache_result(&mut self, timestamp: SystemTime, is_recent: bool, formatted: Vec<u8>) {
+        // Remove oldest entry if cache is full
+        if self.cache.len() >= CACHE_SIZE {
+            self.cache.pop_back();
+        }
+        // Add new entry at front (most recently used)
+        self.cache.push_front(CacheEntry {
+            timestamp,
+            is_recent,
+            formatted,
+        });
+    }
+}
+
+// Thread-local cache for formatters, locale, and formatted timestamps
 thread_local! {
-    static OLDER_FORMATTER: RefCell<Option<LsDateFormatter>> = const { RefCell::new(None) };
+    static FORMATTER_STATE: RefCell<FormatterState> = const { RefCell::new(FormatterState::new()) };
 }
 
 /// Initialize a date-time formatter (recent files) with fallback to English locale.
@@ -151,115 +196,81 @@ fn init_date_formatter(locale: &Locale) -> LsDateFormatter {
 /// let older = format_ls_time(ts, false);
 /// ```
 pub fn format_ls_time(timestamp: SystemTime, is_recent: bool) -> String {
-    let (locale, _source) = get_time_locale();
-
-    // For C/POSIX locale, use simple ASCII-only format for backward compatibility
-    if locale == &DEFAULT_LOCALE {
-        return format_posix_time(timestamp, is_recent);
-    }
-
-    // Use ICU4X formatters for full locale support
-    if is_recent {
-        format_with_icu_recent(timestamp, locale)
-    } else {
-        format_with_icu_older(timestamp, locale)
-    }
+    // Delegate to write_ls_time to ensure consistency and leverage caching
+    let mut buf = Vec::with_capacity(32);
+    write_ls_time(&mut buf, timestamp, is_recent);
+    // SAFETY: write_ls_time produces valid UTF-8 (either ASCII POSIX format or ICU4X formatted output)
+    String::from_utf8(buf).expect("BUG: formatted timestamp should be valid UTF-8")
 }
 
 /// Write a timestamp for `ls` output directly into the provided buffer.
 /// This avoids intermediate String allocation on the hot path.
 pub fn write_ls_time(out: &mut Vec<u8>, timestamp: SystemTime, is_recent: bool) {
-    let (locale, _source) = get_time_locale();
+    FORMATTER_STATE.with(|state_cell| {
+        let mut state = state_cell.borrow_mut();
 
-    if locale == &DEFAULT_LOCALE {
-        // Fast POSIX path: reuse existing formatter and append.
-        let s = format_posix_time(timestamp, is_recent);
-        out.extend_from_slice(s.as_bytes());
-        return;
-    }
-
-    // Use ICU4X formatters for full locale support; stream into out.
-    let dt = system_time_to_icu_datetime(timestamp);
-    struct WriteVec<'a>(&'a mut Vec<u8>);
-    impl core::fmt::Write for WriteVec<'_> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            self.0.extend_from_slice(s.as_bytes());
-            Ok(())
+        // Cache locale lookup on first use
+        if state.locale.is_none() {
+            state.locale = Some(get_time_locale());
         }
-    }
+        let (locale, _source) = state.locale.unwrap();
 
-    if is_recent {
-        RECENT_FORMATTER.with(|formatter_cell| {
-            let mut formatter_opt = formatter_cell.borrow_mut();
-            if formatter_opt.is_none() {
-                *formatter_opt = Some(init_datetime_formatter(locale));
+        // Check cache first
+        if let Some(cached) = state.get_cached(timestamp, is_recent) {
+            out.extend_from_slice(cached);
+            return;
+        }
+
+        // Format timestamp based on locale
+        let formatted = if locale == &DEFAULT_LOCALE {
+            // Fast POSIX path: skip ICU conversion entirely
+            format_posix_time_direct(timestamp, is_recent).into_bytes()
+        } else {
+            // Use ICU4X formatters for full locale support
+            let dt = system_time_to_icu_datetime(timestamp);
+            let mut result = Vec::with_capacity(32);
+            struct WriteVec<'a>(&'a mut Vec<u8>);
+            impl core::fmt::Write for WriteVec<'_> {
+                fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                    self.0.extend_from_slice(s.as_bytes());
+                    Ok(())
+                }
             }
-            let mut w = WriteVec(out);
-            formatter_opt
-                .as_ref()
-                .expect("BUG: formatter should be initialized")
-                .format(&dt)
-                .write_to(&mut w)
-                .expect("BUG: write to buffer failed");
-        });
-    } else {
-        OLDER_FORMATTER.with(|formatter_cell| {
-            let mut formatter_opt = formatter_cell.borrow_mut();
-            if formatter_opt.is_none() {
-                *formatter_opt = Some(init_date_formatter(locale));
+
+            if is_recent {
+                if state.recent_formatter.is_none() {
+                    state.recent_formatter = Some(init_datetime_formatter(locale));
+                }
+                let mut w = WriteVec(&mut result);
+                state
+                    .recent_formatter
+                    .as_ref()
+                    .expect("BUG: formatter should be initialized")
+                    .format(&dt)
+                    .write_to(&mut w)
+                    .expect("BUG: write to buffer failed");
+            } else {
+                if state.older_formatter.is_none() {
+                    state.older_formatter = Some(init_date_formatter(locale));
+                }
+                let mut w = WriteVec(&mut result);
+                state
+                    .older_formatter
+                    .as_ref()
+                    .expect("BUG: formatter should be initialized")
+                    .format(&dt)
+                    .write_to(&mut w)
+                    .expect("BUG: write to buffer failed");
             }
-            let mut w = WriteVec(out);
-            formatter_opt
-                .as_ref()
-                .expect("BUG: formatter should be initialized")
-                .format(&dt)
-                .write_to(&mut w)
-                .expect("BUG: write to buffer failed");
-        });
-    }
+            result
+        };
+
+        // Cache the result and write to output
+        out.extend_from_slice(&formatted);
+        state.cache_result(timestamp, is_recent, formatted);
+    });
 }
 
-/// Format timestamp for recent files (shows time, not year)
-fn format_with_icu_recent(timestamp: SystemTime, locale: &Locale) -> String {
-    RECENT_FORMATTER.with(|formatter_cell| {
-        let mut formatter_opt = formatter_cell.borrow_mut();
-
-        // Lazy-initialize formatter on first use
-        if formatter_opt.is_none() {
-            *formatter_opt = Some(init_datetime_formatter(locale));
-        }
-
-        let dt = system_time_to_icu_datetime(timestamp);
-
-        // SAFETY: formatter_opt is guaranteed to be Some after initialization above
-        formatter_opt
-            .as_ref()
-            .expect("BUG: formatter should be initialized")
-            .format(&dt)
-            .to_string()
-    })
-}
-
-/// Format timestamp for older files (shows year, not time)
-fn format_with_icu_older(timestamp: SystemTime, locale: &Locale) -> String {
-    OLDER_FORMATTER.with(|formatter_cell| {
-        let mut formatter_opt = formatter_cell.borrow_mut();
-
-        // Lazy-initialize formatter on first use
-        if formatter_opt.is_none() {
-            *formatter_opt = Some(init_date_formatter(locale));
-        }
-
-        let dt = system_time_to_icu_datetime(timestamp);
-
-        // SAFETY: formatter_opt is guaranteed to be Some after initialization above
-        formatter_opt
-            .as_ref()
-            .expect("BUG: formatter should be initialized")
-            .format(&dt)
-            .to_string()
-    })
-}
 
 /// Convert `SystemTime` to ICU4X `DateTime` for Gregorian calendar.
 ///
@@ -315,19 +326,23 @@ fn system_time_to_icu_datetime(timestamp: SystemTime) -> DateTime<Gregorian> {
     let second = (remaining_secs % SECS_PER_MINUTE) as u8;
 
     // Create ICU4X Date and DateTime
-    let date = Date::try_new_gregorian(year, month, day).unwrap_or_else(|err| {
+    let date = Date::try_new_gregorian(year, month, day).unwrap_or_else(|_err| {
         // Fallback to epoch date if conversion fails
+        // Note: Invalid date components are extremely rare in normal operation and would indicate
+        // a bug in the date calculation logic. In release builds, we silently fall back to epoch.
+        #[cfg(debug_assertions)]
         eprintln!(
-            "Warning: Invalid date components ({year}-{month:02}-{day:02}): {err}. Falling back to epoch."
+            "Warning: Invalid date components ({year}-{month:02}-{day:02}): {_err}. Falling back to epoch."
         );
         Date::try_new_gregorian(1970, 1, 1)
             .expect("BUG: Unix epoch date (1970-01-01) should always be valid")
     });
 
-    let time = Time::try_new(hour, minute, second, 0).unwrap_or_else(|err| {
+    let time = Time::try_new(hour, minute, second, 0).unwrap_or_else(|_err| {
         // Fallback to midnight if time creation fails
+        #[cfg(debug_assertions)]
         eprintln!(
-            "Warning: Invalid time components ({hour:02}:{minute:02}:{second:02}): {err}. Falling back to midnight."
+            "Warning: Invalid time components ({hour:02}:{minute:02}:{second:02}): {_err}. Falling back to midnight."
         );
         Time::try_new(0, 0, 0, 0).expect("BUG: Midnight (00:00:00) should always be valid")
     });
@@ -398,10 +413,8 @@ pub const fn days_to_month_day(day_of_year: u32, is_leap: bool) -> (u8, u8) {
     (12, 31)
 }
 
-/// Format timestamp using POSIX/C locale (ASCII-only, English month names).
-///
-/// This function provides a fallback formatter for C/POSIX locales,
-/// ensuring backward compatibility with systems expecting ASCII-only output.
+/// Fast POSIX time formatting that skips ICU conversion entirely.
+/// This is the hot path for C/POSIX locale and needs to be as fast as possible.
 ///
 /// # Format
 ///
@@ -409,15 +422,13 @@ pub const fn days_to_month_day(day_of_year: u32, is_leap: bool) -> (u8, u8) {
 /// - Older files: "Mon DD  YYYY" (e.g., "Jan 15  2024")
 ///
 /// Note the two spaces before the year in older file format for alignment.
-fn format_posix_time(timestamp: SystemTime, is_recent: bool) -> String {
-    let dt = system_time_to_icu_datetime(timestamp);
+fn format_posix_time_direct(timestamp: SystemTime, is_recent: bool) -> String {
+    // Get duration since UNIX_EPOCH, defaulting to epoch for pre-1970 times
+    let duration = timestamp.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs() as i64;
 
-    // Extract components from ICU DateTime
-    let year = dt.date.era_year().year;
-    let month = dt.date.month().ordinal;
-    let day = dt.date.day_of_month().0;
-    let hour = dt.time.hour.number();
-    let minute = dt.time.minute.number();
+    // Fast conversion without creating ICU types
+    let (year, month, day, hour, minute) = epoch_to_components_fast(secs);
 
     if is_recent {
         // Format: "Mon DD HH:MM"
@@ -426,6 +437,65 @@ fn format_posix_time(timestamp: SystemTime, is_recent: bool) -> String {
         // Format: "Mon DD  YYYY" (note: two spaces before year)
         format!("{} {:2}  {}", month_abbr(month), day, year)
     }
+}
+
+/// Fast epoch-to-components conversion optimized for common date range.
+/// Returns (year, month, day, hour, minute) without creating ICU types.
+#[inline]
+fn epoch_to_components_fast(secs: i64) -> (i32, u8, u8, u8, u8) {
+    // Calculate date components
+    let days = secs / SECS_PER_DAY;
+    let remaining_secs = secs % SECS_PER_DAY;
+
+    // Fast year calculation using average year length
+    // 365.2425 days per year in Gregorian calendar ≈ 146097 days per 400 years
+    let mut year = 1970_i32;
+    let mut days_remaining = days;
+
+    // Fast path for common range (2000-2100)
+    if days >= 10957 {  // Days from 1970 to 2000
+        year = 2000;
+        days_remaining -= 10957;
+        
+        // Estimate years using average of 365.25 days
+        let est_years = (days_remaining / 365) as i32;
+        if est_years > 0 {
+            year += est_years;
+            days_remaining -= days_in_years_fast(est_years);
+            
+            // Adjust if we overshot
+            while days_remaining < 0 {
+                year -= 1;
+                days_remaining += days_in_year(year);
+            }
+            while days_remaining >= days_in_year(year) {
+                days_remaining -= days_in_year(year);
+                year += 1;
+            }
+        }
+    } else {
+        // Fallback for dates before 2000
+        while days_remaining >= days_in_year(year) {
+            days_remaining -= days_in_year(year);
+            year += 1;
+        }
+    }
+
+    // Convert day-of-year to month and day
+    let (month, day) = days_to_month_day(days_remaining.saturating_add(1) as u32, is_leap_year(year));
+
+    // Calculate time components
+    let hour = ((remaining_secs / SECS_PER_HOUR) % 24) as u8;
+    let minute = ((remaining_secs % SECS_PER_HOUR) / SECS_PER_MINUTE) as u8;
+
+    (year, month, day, hour, minute)
+}
+
+/// Calculate total days in a span of years (approximate for fast path)
+#[inline]
+const fn days_in_years_fast(years: i32) -> i64 {
+    // Use average of 365.25 days per year
+    (years as i64) * 365 + (years as i64) / 4
 }
 
 /// Get English abbreviated month name for POSIX/C locale.
@@ -464,7 +534,7 @@ mod tests {
     fn test_posix_format_recent() {
         // 2024-01-15 10:50:00 UTC
         let ts = UNIX_EPOCH + Duration::from_secs(1705315800);
-        let formatted = format_posix_time(ts, true);
+        let formatted = format_posix_time_direct(ts, true);
         assert!(formatted.contains("Jan"));
         assert!(formatted.contains("15"));
         assert!(formatted.contains("10:50"));
@@ -474,7 +544,7 @@ mod tests {
     fn test_posix_format_older() {
         // 2024-01-15 10:30:00 UTC
         let ts = UNIX_EPOCH + Duration::from_secs(1705315800);
-        let formatted = format_posix_time(ts, false);
+        let formatted = format_posix_time_direct(ts, false);
         assert!(formatted.contains("Jan"));
         assert!(formatted.contains("15"));
         assert!(formatted.contains("2024"));
