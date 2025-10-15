@@ -4101,6 +4101,7 @@ dependencies = [
  "clap",
  "filetime",
  "fluent",
+ "jiff",
  "parse_datetime",
  "thiserror 2.0.16",
  "uucore",
