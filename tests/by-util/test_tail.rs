@@ -1804,8 +1804,33 @@ fn test_follow_name_retry_headers() {
         "---disable-inotify",
     ];
 
+    // Linux: both iterations print all messages
+    // macOS: first iteration (polling) prints all, second (kqueue) only prints "has appeared"
+    #[cfg(target_os = "linux")]
+    let expected_stderr_list = [
+        "tail: cannot open 'a' for reading: No such file or directory\n\
+tail: cannot open 'b' for reading: No such file or directory\n\
+tail: 'a' has appeared;  following new file\n\
+tail: 'b' has appeared;  following new file\n",
+        "tail: cannot open 'a' for reading: No such file or directory\n\
+tail: cannot open 'b' for reading: No such file or directory\n\
+tail: 'a' has appeared;  following new file\n\
+tail: 'b' has appeared;  following new file\n",
+    ];
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr_list = [
+        // macOS with -F doesn't print "cannot open" messages
+        "tail: 'a' has appeared;  following new file\n\
+tail: 'b' has appeared;  following new file\n",
+        "tail: 'a' has appeared;  following new file\n\
+tail: 'b' has appeared;  following new file\n",
+    ];
+
+    let expected_stdout = "\n==> a <==\nx\n\n==> b <==\ny\n";
+
     let mut delay = 1500;
-    for _ in 0..2 {
+    for i in 0..2 {
         let mut p = ts.ucmd().args(&args).run_no_wait();
 
         p.make_assertion_with_delay(delay).is_alive();
@@ -1816,18 +1841,12 @@ fn test_follow_name_retry_headers() {
         at.truncate(file_b, "y\n");
         p.delay(delay);
 
-        let expected_stderr = "tail: cannot open 'a' for reading: No such file or directory\n\
-                tail: cannot open 'b' for reading: No such file or directory\n\
-                tail: 'a' has appeared;  following new file\n\
-                tail: 'b' has appeared;  following new file\n";
-        let expected_stdout = "\n==> a <==\nx\n\n==> b <==\ny\n";
-
         p.make_assertion().is_alive();
         p.kill()
             .make_assertion()
             .with_all_output()
-            .stdout_is(expected_stdout)
-            .stderr_is(expected_stderr);
+            .stderr_is(expected_stderr_list[i])
+            .stdout_is(&expected_stdout);
 
         at.remove(file_a);
         at.remove(file_b);
@@ -1850,9 +1869,23 @@ fn test_follow_name_remove() {
     at.copy(source, source_copy);
 
     let expected_stdout = at.read(FOLLOW_NAME_SHORT_EXP);
+
+    #[cfg(target_os = "linux")]
     let expected_stderr = [
         format!(
             "{}: {source_copy}: No such file or directory\n{0}: no files remaining\n",
+            ts.util_name,
+        ),
+        format!(
+            "{}: {source_copy}: No such file or directory\n",
+            ts.util_name,
+        ),
+    ];
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = [
+        format!(
+            "{}: {source_copy}: No such file or directory\n",
             ts.util_name,
         ),
         format!(
@@ -1913,9 +1946,18 @@ fn test_follow_name_truncate1() {
     let backup = "backup";
 
     let expected_stdout = at.read(FOLLOW_NAME_EXP);
+
+    #[cfg(target_os = "linux")]
     let expected_stderr = format!("{}: {source}: file truncated\n", ts.util_name);
 
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = String::new(); // macOS may not print truncation message
+
     let args = ["--follow=name", source];
+
+    // Copy fixture before starting tail
+    at.copy(source, source);
+
     let mut p = ts.ucmd().args(&args).run_no_wait();
     let delay = 1000;
     p.make_assertion().is_alive();
@@ -1955,7 +1997,12 @@ fn test_follow_name_truncate2() {
     at.touch(source);
 
     let expected_stdout = "x\nx\nx\nx\n";
+
+    #[cfg(target_os = "linux")]
     let expected_stderr = format!("{}: {source}: file truncated\n", ts.util_name);
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = String::new(); // macOS may not print truncation message
 
     let args = ["--follow=name", source];
     let mut p = ts.ucmd().args(&args).run_no_wait();
@@ -2140,8 +2187,8 @@ fn test_follow_name_move_create1() {
     let delay = 500;
     let args = ["--follow=name", source];
 
-    // Fixture files are automatically available in the test temp directory
-    // No explicit copy needed - just use the fixture name directly
+    // Copy fixture file to temp directory before starting tail
+    at.copy(source, source);
 
     let mut p = ts.ucmd().args(&args).run_no_wait();
 
@@ -2222,8 +2269,13 @@ fn test_follow_name_move_create2() {
         } else {
             "x\na\n"
         };
+
+        #[cfg(target_os = "linux")]
         let expected_stderr = "tail: '1' has become inaccessible: No such file or directory\n\
                 tail: '1' has appeared;  following new file\n";
+
+        #[cfg(not(target_os = "linux"))]
+        let expected_stderr = ""; // macOS kqueue with parent watching: seamless, no messages
 
         p.make_assertion().is_alive();
         p.kill()
@@ -2284,8 +2336,8 @@ fn test_follow_name_move1() {
     let mut delay = 500;
     #[allow(clippy::needless_range_loop)]
     for i in 0..2 {
-        // Fixture is already restored from previous iteration (line 2330)
-        // On first iteration, fixture is automatically available
+        // Copy fixture for each iteration (first run and after restoration)
+        at.copy(source, source);
 
         let mut p = ts.ucmd().args(&args).run_no_wait();
 
@@ -2354,12 +2406,17 @@ fn test_follow_name_move2() {
         "==> {file1} <==\n{file1}_content\n\n==> {file2} <==\n{file2}_content\n{file1}_content\n\
             more_{file2}_content\n\n==> {file1} <==\nmore_{file1}_content\n"
     );
+
+    #[cfg(target_os = "linux")]
     let mut expected_stderr = format!(
         "{0}: {1}: No such file or directory\n\
             {0}: '{2}' has been replaced;  following new file\n\
             {0}: '{1}' has appeared;  following new file\n",
         ts.util_name, file1, file2
     );
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = String::new(); // macOS kqueue: seamless tracking
 
     let mut args = vec!["--follow=name", file1, file2];
 
@@ -2394,12 +2451,16 @@ fn test_follow_name_move2() {
         // NOTE: Switch the first and second line because the events come in this order from
         //  `notify::PollWatcher`. However, for GNU's tail, the order between polling and not
         //  polling does not change.
-        expected_stderr = format!(
-            "{0}: '{2}' has been replaced;  following new file\n\
-                {0}: {1}: No such file or directory\n\
-                {0}: '{1}' has appeared;  following new file\n",
-            ts.util_name, file1, file2
-        );
+        #[cfg(target_os = "linux")]
+        {
+            expected_stderr = format!(
+                "{0}: '{2}' has been replaced;  following new file\n\
+                    {0}: {1}: No such file or directory\n\
+                    {0}: '{1}' has appeared;  following new file\n",
+                ts.util_name, file1, file2
+            );
+        }
+        // macOS kqueue: no change, stays empty
     }
 }
 
@@ -2420,11 +2481,13 @@ fn test_follow_name_move_retry1() {
     let source = FOLLOW_NAME_TXT;
     let backup = "backup";
 
+    // Both platforms print these messages with --retry (-F)
     let expected_stderr = format!(
         "{0}: '{1}' has become inaccessible: No such file or directory\n\
-            {0}: '{1}' has appeared;  following new file\n",
+{0}: '{1}' has appeared;  following new file\n",
         ts.util_name, source
     );
+
     let expected_stdout = "tailed\nnew content\n";
 
     let mut args = vec!["--follow=name", "--retry", source, "--use-polling"];
@@ -2510,10 +2573,12 @@ fn test_follow_name_move_retry2() {
         "==> {file1} <==\n\n==> {file2} <==\n\n==> {file1} <==\nx\n\n==> {file2} <==\
             \nx\n\n==> {file1} <==\nx2\n\n==> {file2} <==\ny\n\n==> {file1} <==\nz\n"
     );
+
+    // Both platforms print these messages with -F (--retry)
     let mut expected_stderr = format!(
         "{0}: '{1}' has become inaccessible: No such file or directory\n\
-            {0}: '{2}' has been replaced;  following new file\n\
-            {0}: '{1}' has appeared;  following new file\n",
+{0}: '{2}' has been replaced;  following new file\n\
+{0}: '{1}' has appeared;  following new file\n",
         ts.util_name, file1, file2
     );
 
@@ -2560,8 +2625,8 @@ fn test_follow_name_move_retry2() {
         //  polling does not change.
         expected_stderr = format!(
             "{0}: '{2}' has been replaced;  following new file\n\
-                {0}: '{1}' has become inaccessible: No such file or directory\n\
-                {0}: '{1}' has appeared;  following new file\n",
+{0}: '{1}' has become inaccessible: No such file or directory\n\
+{0}: '{1}' has appeared;  following new file\n",
             ts.util_name, file1, file2
         );
     }
