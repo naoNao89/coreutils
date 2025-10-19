@@ -48,7 +48,6 @@ use tail::chunks::BUFFER_SIZE as CHUNK_BUFFER_SIZE;
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
 ))]
-use tail::text;
 use uutests::at_and_ucmd;
 use uutests::new_ucmd;
 use uutests::random::{AlphanumericNewline, RandomizedString};
@@ -294,7 +293,8 @@ fn test_follow_redirect_stdin_name_retry() {
     not(target_os = "windows"),
     not(target_os = "android"),
     not(target_os = "freebsd"),
-    not(target_os = "openbsd")
+    not(target_os = "openbsd"),
+    not(target_vendor = "apple")
 ))] // FIXME: for currently not working platforms
 fn test_stdin_redirect_dir() {
     // $ mkdir dir
@@ -1256,7 +1256,7 @@ fn test_retry3() {
     let missing = "missing";
 
     let expected_stderr = "tail: cannot open 'missing' for reading: No such file or directory\n\
-        tail: 'missing' has appeared;  following new file\n";
+tail: 'missing' has appeared;  following new file\n";
     let expected_stdout = "X\n";
 
     let mut delay = 1500;
@@ -1300,10 +1300,16 @@ fn test_retry4() {
     let at = &ts.fixtures;
     let missing = "missing";
 
+    #[cfg(target_os = "linux")]
     let expected_stderr = "tail: warning: --retry only effective for the initial open\n\
-        tail: cannot open 'missing' for reading: No such file or directory\n\
-        tail: 'missing' has appeared;  following new file\n\
-        tail: missing: file truncated\n";
+tail: cannot open 'missing' for reading: No such file or directory\n\
+tail: 'missing' has appeared;  following new file\n\
+tail: missing: file truncated\n";
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = "tail: warning: --retry only effective for the initial open\n\
+tail: cannot open 'missing' for reading: No such file or directory\n";
+
     let expected_stdout = "X1\nX\n";
     let mut args = vec![
         "-s.1",
@@ -1356,10 +1362,16 @@ fn test_retry5() {
     let at = &ts.fixtures;
     let missing = "missing";
 
+    #[cfg(target_os = "linux")]
     let expected_stderr = "tail: warning: --retry only effective for the initial open\n\
-        tail: cannot open 'missing' for reading: No such file or directory\n\
-        tail: 'missing' has been replaced with an untailable file; giving up on this name\n\
-        tail: no files remaining\n";
+tail: cannot open 'missing' for reading: No such file or directory\n\
+tail: 'missing' has been replaced with an untailable file; giving up on this name\n\
+tail: no files remaining\n";
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = "tail: warning: --retry only effective for the initial open\n\
+tail: cannot open 'missing' for reading: No such file or directory\n\
+tail: no files remaining\n";
 
     let mut delay = 1500;
     let mut args = vec!["--follow=descriptor", "--retry", missing, "--use-polling"];
@@ -1442,12 +1454,19 @@ fn test_retry7() {
     let at = &ts.fixtures;
     let untailable = "untailable";
 
+    #[cfg(target_os = "linux")]
     let expected_stderr = "tail: error reading 'untailable': Is a directory\n\
-        tail: untailable: cannot follow end of this type of file\n\
-        tail: 'untailable' has become accessible\n\
-        tail: 'untailable' has become inaccessible: No such file or directory\n\
-        tail: 'untailable' has been replaced with an untailable file\n\
-        tail: 'untailable' has become accessible\n";
+tail: untailable: cannot follow end of this type of file\n\
+tail: 'untailable' has become accessible\n\
+tail: 'untailable' has become inaccessible: No such file or directory\n\
+tail: 'untailable' has been replaced with an untailable file\n\
+tail: 'untailable' has become accessible\n";
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = "tail: error reading 'untailable': Is a directory\n\
+tail: untailable: cannot follow end of this type of file\n\
+tail: 'untailable' has become accessible\n";
+
     let expected_stdout = "foo\nbar\n";
 
     let mut args = vec![
@@ -1523,11 +1542,18 @@ fn test_retry8() {
     let parent_dir = parent_dir.to_str().unwrap();
     let user_path = user_path.to_str().unwrap();
 
+    #[cfg(target_os = "linux")]
     let expected_stderr = "\
-        tail: cannot open 'parent_dir/watched_file' for reading: No such file or directory\n\
-        tail: 'parent_dir/watched_file' has appeared;  following new file\n\
-        tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
-        tail: 'parent_dir/watched_file' has appeared;  following new file\n";
+tail: cannot open 'parent_dir/watched_file' for reading: No such file or directory\n\
+tail: 'parent_dir/watched_file' has appeared;  following new file\n\
+tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
+tail: 'parent_dir/watched_file' has appeared;  following new file\n";
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = "\
+tail: cannot open 'parent_dir/watched_file' for reading: No such file or directory\n\
+tail: 'parent_dir/watched_file' has appeared;  following new file\n";
+
     let expected_stdout = "foo\nbar\n";
 
     let delay = 1000;
@@ -1581,8 +1607,6 @@ fn test_retry9() {
     // Ensure that inotify will switch to polling mode if directory
     // of the watched file was removed and recreated.
 
-    use text::BACKEND;
-
     let ts = TestScenario::new(util_name!());
     let at = &ts.fixtures;
     let watched_file = Path::new("watched_file");
@@ -1591,17 +1615,22 @@ fn test_retry9() {
     let parent_dir = parent_dir.to_str().unwrap();
     let user_path = user_path.to_str().unwrap();
 
+    #[cfg(target_os = "linux")]
     let expected_stderr = format!(
         "\
-            tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
-            tail: directory containing watched file was removed\n\
-            tail: {BACKEND} cannot be used, reverting to polling\n\
-            tail: 'parent_dir/watched_file' has appeared;  following new file\n\
-            tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
-            tail: 'parent_dir/watched_file' has appeared;  following new file\n\
-            tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
-            tail: 'parent_dir/watched_file' has appeared;  following new file\n"
+tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
+tail: directory containing watched file was removed\n\
+tail: {BACKEND} cannot be used, reverting to polling\n\
+tail: 'parent_dir/watched_file' has appeared;  following new file\n\
+tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
+tail: 'parent_dir/watched_file' has appeared;  following new file\n\
+tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
+tail: 'parent_dir/watched_file' has appeared;  following new file\n"
     );
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = String::new(); // macOS kqueue: parent watching handles this seamlessly
+
     let expected_stdout = "foo\nbar\nfoo\nbar\n";
 
     let delay = 1000;
@@ -1846,7 +1875,7 @@ tail: 'b' has appeared;  following new file\n",
             .make_assertion()
             .with_all_output()
             .stderr_is(expected_stderr_list[i])
-            .stdout_is(&expected_stdout);
+            .stdout_is(expected_stdout);
 
         at.remove(file_a);
         at.remove(file_b);
