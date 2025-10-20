@@ -42,12 +42,6 @@ use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::process::Stdio;
 use tail::chunks::BUFFER_SIZE as CHUNK_BUFFER_SIZE;
-#[cfg(all(
-    not(target_os = "android"),
-    not(target_os = "windows"),
-    not(target_os = "freebsd"),
-    not(target_os = "openbsd")
-))]
 use uutests::at_and_ucmd;
 use uutests::new_ucmd;
 use uutests::random::{AlphanumericNewline, RandomizedString};
