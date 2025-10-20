@@ -39,6 +39,16 @@ impl WatcherRx {
         // where the watcher backend may not support watching the parent directory.
         let mut is_special_fs_path = false;
 
+        // Determine if path is in a special filesystem (like /dev or /proc) at runtime,
+        // regardless of file type. This informs error handling later and whether to avoid
+        // parent watching on platforms where it's unsupported.
+        if let Some(parent) = watch_path.parent() {
+            let parent_str = parent.to_string_lossy();
+            if parent_str.starts_with("/dev") || parent_str.starts_with("/proc") {
+                is_special_fs_path = true;
+            }
+        }
+
         // Apply parent directory workaround for inotify (Linux) AND kqueue (BSD/macOS)
         // This prevents issues when files are renamed/deleted while being watched.
         #[cfg(any(
@@ -70,16 +80,7 @@ impl WatcherRx {
             causing --follow=name to exit prematurely instead of waiting for files to reappear.
             */
             if let Some(parent) = watch_path.parent() {
-                // Check if this is a special filesystem path (like /dev or /proc).
-                // These may not support watching on some platforms (e.g., kqueue on BSD).
-                // We check this at runtime because the binary might be compiled on one platform
-                // but run on another (e.g., FreeBSD CI compiles on Linux but runs in FreeBSD VM).
-                let parent_str = parent.to_string_lossy();
-                if parent_str.starts_with("/dev") || parent_str.starts_with("/proc") {
-                    // Don't try to watch parent; fall through to watch file directly.
-                    // If watching the file itself fails (e.g., char device), handle gracefully below.
-                    is_special_fs_path = true;
-                } else {
+                if !is_special_fs_path {
                     // Normal case: watch parent directory
                     // clippy::assigning_clones added with Rust 1.78
                     // Rust version = 1.76 on OpenBSD stable/7.5
@@ -347,9 +348,9 @@ impl Observer {
                             // Add existing regular files to `Watcher` (InotifyWatcher).
                             watcher_rx.watch_with_parent(&path)?;
                         } else if !path.is_orphan() {
-                        // If `path` is not a tailable file, add its parent to `Watcher` using the same
-                        // parent-watching logic (handles special fs like /dev or /proc on kqueue).
-                        watcher_rx.watch_with_parent(path.parent().unwrap())?;
+                            // If `path` is not a tailable file, add its parent to `Watcher` using the same
+                            // parent-watching logic (handles special fs like /dev or /proc on kqueue).
+                            watcher_rx.watch_with_parent(path.parent().unwrap())?;
                         } else {
                             // If there is no parent, add `path` to `orphans`.
                             self.orphans.push(path);
