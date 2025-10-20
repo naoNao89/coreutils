@@ -101,21 +101,24 @@ impl WatcherRx {
             watch_path = watch_path.canonicalize()?;
         }
 
-        // Try to watch the path. For special files (like /dev/null on kqueue platforms),
-        // this may fail with ENOTSUP. In such cases, tail can still function but without
-        // filesystem event notifications (will rely on polling if needed).
+        // Try to watch the path. For special files (like /dev/null),
+        // this may fail with different errors depending on the platform:
+        // - Linux inotify: EACCES (Permission denied)
+        // - BSD/macOS kqueue: ENOTSUP (Operation not supported)
+        // In such cases, tail can still function but without filesystem event notifications.
         match self.watch(&watch_path, RecursiveMode::NonRecursive) {
             Ok(()) => Ok(()),
             Err(e) => {
                 let err_str = e.to_string();
-                // Only silently ignore ENOTSUP/EOPNOTSUPP for special filesystem paths.
+                // Only silently ignore watch errors for special filesystem paths.
                 // For regular files, propagate the error so tail knows the watcher failed.
                 if is_special_fs_path
                     && (err_str.contains("Operation not supported")
                         || err_str.contains("not supported by device")
-                        || err_str.contains("Not supported"))
+                        || err_str.contains("Not supported")
+                        || err_str.contains("Permission denied"))
                 {
-                    // Special filesystem (e.g., /dev) - ignore ENOTSUP, tail will work without events
+                    // Special filesystem (e.g., /dev) - ignore watch errors, tail will work without events
                     Ok(())
                 } else {
                     // Regular file or different error - propagate it
