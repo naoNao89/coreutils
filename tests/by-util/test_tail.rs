@@ -1853,7 +1853,7 @@ tail: 'b' has appeared;  following new file\n",
     let expected_stdout = "\n==> a <==\nx\n\n==> b <==\ny\n";
 
     let mut delay = 1500;
-    for i in 0..2 {
+    for expected_stderr in &expected_stderr_list {
         let mut p = ts.ucmd().args(&args).run_no_wait();
 
         p.make_assertion_with_delay(delay).is_alive();
@@ -1868,7 +1868,7 @@ tail: 'b' has appeared;  following new file\n",
         p.kill()
             .make_assertion()
             .with_all_output()
-            .stderr_is(expected_stderr_list[i])
+            .stderr_is(expected_stderr)
             .stdout_is(expected_stdout);
 
         at.remove(file_a);
