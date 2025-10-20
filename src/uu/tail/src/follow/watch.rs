@@ -36,17 +36,7 @@ impl WatcherRx {
     fn watch_with_parent(&mut self, path: &Path) -> UResult<()> {
         let mut watch_path = path.to_owned();
         // Track if we're trying to watch a file in a special filesystem (like /dev or /proc)
-        // where kqueue cannot watch the parent directory.
-        #[cfg_attr(
-            not(any(
-                target_os = "macos",
-                target_os = "freebsd",
-                target_os = "openbsd",
-                target_os = "netbsd",
-                target_os = "dragonfly"
-            )),
-            allow(unused_mut)
-        )]
+        // where the watcher backend may not support watching the parent directory.
         let mut is_special_fs_path = false;
 
         // Apply parent directory workaround for inotify (Linux) AND kqueue (BSD/macOS)
@@ -77,42 +67,17 @@ impl WatcherRx {
             causing --follow=name to exit prematurely instead of waiting for files to reappear.
             */
             if let Some(parent) = watch_path.parent() {
-                // Skip parent watching for /dev and similar special directories on kqueue platforms.
-                // kqueue cannot watch /dev, /proc, etc., and will return ENOTSUP.
-                // For files in these directories, watch the file directly instead of the parent.
-                #[cfg(any(
-                    target_os = "macos",
-                    target_os = "freebsd",
-                    target_os = "openbsd",
-                    target_os = "netbsd",
-                    target_os = "dragonfly"
-                ))]
-                {
-                    let parent_str = parent.to_string_lossy();
-                    if parent_str.starts_with("/dev") || parent_str.starts_with("/proc") {
-                        // Don't try to watch parent; fall through to watch file directly.
-                        // If watching the file itself fails (e.g., char device), handle gracefully below.
-                        is_special_fs_path = true;
-                    } else {
-                        // Normal case: watch parent directory
-                        // clippy::assigning_clones added with Rust 1.78
-                        // Rust version = 1.76 on OpenBSD stable/7.5
-                        #[cfg_attr(not(target_os = "openbsd"), allow(clippy::assigning_clones))]
-                        if parent.is_dir() {
-                            watch_path = parent.to_owned();
-                        } else {
-                            watch_path = PathBuf::from(".");
-                        }
-                    }
-                }
-                #[cfg(not(any(
-                    target_os = "macos",
-                    target_os = "freebsd",
-                    target_os = "openbsd",
-                    target_os = "netbsd",
-                    target_os = "dragonfly"
-                )))]
-                {
+                // Check if this is a special filesystem path (like /dev or /proc).
+                // These may not support watching on some platforms (e.g., kqueue on BSD).
+                // We check this at runtime because the binary might be compiled on one platform
+                // but run on another (e.g., FreeBSD CI compiles on Linux but runs in FreeBSD VM).
+                let parent_str = parent.to_string_lossy();
+                if parent_str.starts_with("/dev") || parent_str.starts_with("/proc") {
+                    // Don't try to watch parent; fall through to watch file directly.
+                    // If watching the file itself fails (e.g., char device), handle gracefully below.
+                    is_special_fs_path = true;
+                } else {
+                    // Normal case: watch parent directory
                     // clippy::assigning_clones added with Rust 1.78
                     // Rust version = 1.76 on OpenBSD stable/7.5
                     #[cfg_attr(not(target_os = "openbsd"), allow(clippy::assigning_clones))]
