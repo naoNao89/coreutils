@@ -63,6 +63,25 @@ impl WatcherRx {
             causing --follow=name to exit prematurely instead of waiting for files to reappear.
             */
             if let Some(parent) = watch_path.parent() {
+                // Skip parent watching for /dev and similar special directories on kqueue platforms.
+                // kqueue cannot watch /dev, /proc, etc., and will return ENOTSUP.
+                // For files in these directories (like /dev/null), skip parent watching entirely.
+                #[cfg(any(
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                ))]
+                {
+                    let parent_str = parent.to_string_lossy();
+                    if parent_str.starts_with("/dev") || parent_str.starts_with("/proc") {
+                        // Cannot watch special FS directories; skip watching for these files.
+                        // tail will work but won't detect renames/deletes via filesystem events.
+                        return Ok(());
+                    }
+                }
+
                 // clippy::assigning_clones added with Rust 1.78
                 // Rust version = 1.76 on OpenBSD stable/7.5
                 #[cfg_attr(not(target_os = "openbsd"), allow(clippy::assigning_clones))]
@@ -82,18 +101,7 @@ impl WatcherRx {
             watch_path = watch_path.canonicalize()?;
         }
 
-        // Try to watch the path; if it fails with "Operation not supported" (e.g., /dev on kqueue),
-        // silently skip watching. This allows tail to work with device files like /dev/null
-        // even though kqueue cannot watch special filesystems like /dev.
-        match self.watch(&watch_path, RecursiveMode::NonRecursive) {
-            Ok(()) => Ok(()),
-            Err(e) if e.to_string().contains("Operation not supported") => {
-                // Parent directory watching not supported for this filesystem (e.g., /dev on FreeBSD)
-                // Fall back to direct file watching without parent directory
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
+        self.watch(&watch_path, RecursiveMode::NonRecursive)
     }
 
     fn watch(&mut self, path: &Path, mode: RecursiveMode) -> UResult<()> {
