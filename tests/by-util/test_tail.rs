@@ -81,9 +81,9 @@ const DEFAULT_SLEEP_INTERVAL_MILLIS: u64 = 1000;
 // Delay values for reliable test execution, accounting for tail's event processing
 // These must be > tail's sleep interval to avoid race conditions in CI
 // For default tail (1s sleep): use 3x = 3000ms for safety
-const DELAY_FOR_TAIL_NORMAL: u64 = 3000;  // For default tail -f (1s interval)
-// For tail with -s.1 (100ms sleep): use 3x = 300ms  
-const DELAY_FOR_TAIL_FAST: u64 = 300;     // For tail -s.1 (100ms interval)
+const DELAY_FOR_TAIL_NORMAL: u64 = 3000; // For default tail -f (1s interval)
+// For tail with -s.1 (100ms sleep): use 3x = 300ms
+const DELAY_FOR_TAIL_FAST: u64 = 300; // For tail -s.1 (100ms interval)
 
 // The binary integer "10000000" is *not* a valid UTF-8 encoding
 // of a character: https://en.wikipedia.org/wiki/UTF-8#Encoding
@@ -163,7 +163,8 @@ fn test_stdin_redirect_file_follow() {
         .set_stdin(File::open(at.plus("f")).unwrap())
         .run_no_wait();
 
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     p.kill()
         .make_assertion()
         .with_all_output()
@@ -421,7 +422,8 @@ fn test_follow_stdin_descriptor() {
             .set_stdin(Stdio::piped())
             .args(&args)
             .run_no_wait();
-        p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+        p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+            .is_alive();
         p.kill()
             .make_assertion()
             .with_all_output()
@@ -2642,7 +2644,8 @@ fn test_fifo() {
     at.mkfifo("FIFO");
 
     let mut p = ts.ucmd().arg("FIFO").run_no_wait();
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     p.kill()
         .make_assertion()
         .with_all_output()
@@ -2651,7 +2654,8 @@ fn test_fifo() {
 
     for arg in ["-f", "-F"] {
         let mut p = ts.ucmd().arg(arg).arg("FIFO").run_no_wait();
-        p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+        p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+            .is_alive();
         p.kill()
             .make_assertion()
             .with_all_output()
@@ -2674,7 +2678,8 @@ fn test_illegal_seek() {
     at.mkfifo("FIFO");
 
     let mut p = ts.ucmd().arg("FILE").run_no_wait();
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
 
     at.rename("FILE", "FIFO");
     p.delay(DELAY_FOR_TAIL_NORMAL);
@@ -3983,7 +3988,9 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .set_stdin(File::open(text::DEV_PTMX).unwrap())
         .run_no_wait();
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4003,7 +4010,9 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4024,7 +4033,9 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4041,7 +4052,9 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4058,7 +4071,9 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4075,7 +4090,9 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4307,7 +4324,9 @@ fn test_follow_when_files_are_pointing_to_same_relative_file_and_file_is_truncat
         scene.util_name                  // 4
     );
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4356,7 +4375,9 @@ fn test_follow_when_file_and_symlink_are_pointing_to_same_file_and_append_data()
         {more_data}"
     );
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4390,7 +4411,9 @@ fn test_follow_when_file_and_symlink_are_pointing_to_same_file_and_append_data()
         {more_data}"
     );
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4411,7 +4434,9 @@ fn test_args_when_directory_given_shorthand_big_f_together_with_retry() {
     );
     let mut child = scene.ucmd().args(&["-F", "--retry", "dir"]).run_no_wait();
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4420,7 +4445,9 @@ fn test_args_when_directory_given_shorthand_big_f_together_with_retry() {
 
     let mut child = scene.ucmd().args(&["--retry", "-F", "dir"]).run_no_wait();
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4494,7 +4521,9 @@ fn test_follow_when_files_are_pointing_to_same_relative_file_and_file_stays_same
         absolute_path.to_str().unwrap(), // 2
     );
 
-    child.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    child
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     child
         .kill()
         .make_assertion()
@@ -4773,7 +4802,8 @@ fn test_gnu_args_f() {
     let source = "file";
     at.touch(source);
     let mut p = scene.ucmd().args(&["+f", source]).run_no_wait();
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     p.kill()
         .make_assertion()
         .with_all_output()
@@ -4785,7 +4815,8 @@ fn test_gnu_args_f() {
         .set_stdin(Stdio::piped())
         .arg("+f")
         .run_no_wait();
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL).is_alive();
+    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .is_alive();
     p.kill()
         .make_assertion()
         .with_all_output()
