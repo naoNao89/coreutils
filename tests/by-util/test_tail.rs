@@ -1994,7 +1994,7 @@ fn test_follow_name_truncate1() {
     at.copy(source, source);
 
     let mut p = ts.ucmd().args(&args).run_no_wait();
-    let delay = 1000;
+    let delay = DELAY_FOR_TAIL_NORMAL;
     p.make_assertion().is_alive();
 
     at.copy(source, backup);
@@ -2219,7 +2219,7 @@ fn test_follow_name_move_create1() {
     #[cfg(not(target_os = "linux"))]
     let expected_stderr = String::new(); // No error message with kqueue parent watching
 
-    let delay = 500;
+    let delay = DELAY_FOR_TAIL_NORMAL;
     let args = ["--follow=name", source];
 
     // Copy fixture file to temp directory before starting tail
