@@ -37,6 +37,16 @@ impl WatcherRx {
         let mut watch_path = path.to_owned();
         // Track if we're trying to watch a file in a special filesystem (like /dev or /proc)
         // where kqueue cannot watch the parent directory.
+        #[cfg_attr(
+            not(any(
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            )),
+            allow(unused_mut)
+        )]
         let mut is_special_fs_path = false;
 
         // Apply parent directory workaround for inotify (Linux) AND kqueue (BSD/macOS)
