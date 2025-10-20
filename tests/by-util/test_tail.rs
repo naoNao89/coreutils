@@ -1427,7 +1427,7 @@ fn test_retry6() {
         .arg("existing")
         .run_no_wait();
 
-    let delay = 1000;
+    let delay = DELAY_FOR_TAIL_NORMAL;
     p.make_assertion_with_delay(delay).is_alive();
 
     at.truncate(missing, "Y\n");
@@ -1561,7 +1561,7 @@ tail: 'parent_dir/watched_file' has appeared;  following new file\n";
 
     let expected_stdout = "foo\nbar\n";
 
-    let delay = 1000;
+    let delay = DELAY_FOR_TAIL_NORMAL;
 
     let mut p = ts
         .ucmd()
@@ -1639,7 +1639,7 @@ tail: 'parent_dir/watched_file' has appeared;  following new file\n",
 
     let expected_stdout = "foo\nbar\nfoo\nbar\n";
 
-    let delay = 1000;
+    let delay = DELAY_FOR_TAIL_NORMAL;
 
     at.mkdir(parent_dir);
     at.truncate(user_path, "foo\n");
