@@ -79,6 +79,7 @@ const DELAY_FOR_TAIL_NORMAL: u64 = 3000; // For default tail -f (1s interval)
 // - tail's event loop processing adds ~50-100ms overhead per iteration
 // - File system operations (rename, create) can take 50-150ms in CI environments
 // - 3x was insufficient margin, causing flaky tests; 6x provides reliable buffer
+#[cfg(not(target_os = "windows"))]
 const DELAY_FOR_TAIL_FAST: u64 = 600; // For tail -s.1 (100ms interval)
 
 // The binary integer "10000000" is *not* a valid UTF-8 encoding
