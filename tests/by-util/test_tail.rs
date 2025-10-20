@@ -42,6 +42,7 @@ use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::process::Stdio;
 use tail::chunks::BUFFER_SIZE as CHUNK_BUFFER_SIZE;
+#[cfg(target_os = "linux")]
 use tail::text;
 use uutests::at_and_ucmd;
 use uutests::new_ucmd;
