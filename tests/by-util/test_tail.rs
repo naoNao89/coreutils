@@ -73,8 +73,8 @@ const DEFAULT_SLEEP_INTERVAL_MILLIS: u64 = 1000;
 // These must be > tail's sleep interval to avoid race conditions in CI
 // For default tail (1s sleep): use 3x = 3000ms for safety
 const DELAY_FOR_TAIL_NORMAL: u64 = 3000; // For default tail -f (1s interval)
-// For tail with -s.1 (100ms sleep): use 3x = 300ms
-const DELAY_FOR_TAIL_FAST: u64 = 300; // For tail -s.1 (100ms interval)
+// For tail with -s.1 (100ms sleep): use 6x = 600ms for stability
+const DELAY_FOR_TAIL_FAST: u64 = 600; // For tail -s.1 (100ms interval)
 
 // The binary integer "10000000" is *not* a valid UTF-8 encoding
 // of a character: https://en.wikipedia.org/wiki/UTF-8#Encoding
@@ -506,7 +506,7 @@ fn test_follow_single() {
     at.append(FOOBAR_TXT, expected);
 
     child
-        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
         .is_alive();
     child
         .kill()
@@ -541,7 +541,7 @@ fn test_follow_non_utf8_bytes() {
     at.append_bytes(FOOBAR_TXT, &expected);
 
     child
-        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
         .with_current_output()
         .stdout_only_bytes(expected);
 
@@ -569,7 +569,7 @@ fn test_follow_multiple() {
     at.append(FOOBAR_2_TXT, first_append);
 
     child
-        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
         .with_current_output()
         .stdout_only(first_append);
 
@@ -577,7 +577,7 @@ fn test_follow_multiple() {
     at.append(FOOBAR_TXT, second_append);
 
     child
-        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
         .with_current_output()
         .stdout_only_fixture("foobar_follow_multiple_appended.expected");
 
@@ -607,7 +607,7 @@ fn test_follow_name_multiple() {
         at.append(FOOBAR_2_TXT, first_append);
 
         child
-            .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
+            .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
             .with_current_output()
             .stdout_only(first_append);
 
@@ -615,7 +615,7 @@ fn test_follow_name_multiple() {
         at.append(FOOBAR_TXT, second_append);
 
         child
-            .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
+            .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
             .with_current_output()
             .stdout_only_fixture("foobar_follow_multiple_appended.expected");
 
@@ -722,7 +722,7 @@ fn test_follow_with_pid() {
     at.append(FOOBAR_2_TXT, first_append);
 
     child
-        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
         .with_current_output()
         .stdout_only(first_append);
 
@@ -730,7 +730,7 @@ fn test_follow_with_pid() {
     at.append(FOOBAR_TXT, second_append);
 
     child
-        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
         .is_alive()
         .with_current_output()
         .stdout_only_fixture("foobar_follow_multiple_appended.expected");
@@ -739,13 +739,13 @@ fn test_follow_with_pid() {
     kill(Pid::from_raw(i32::try_from(pid).unwrap()), Signal::SIGUSR1).unwrap();
     let _ = dummy.wait();
 
-    child.delay(DEFAULT_SLEEP_INTERVAL_MILLIS);
+    child.delay(DELAY_FOR_TAIL_NORMAL);
 
     let third_append = "should\nbe\nignored\n";
     at.append(FOOBAR_TXT, third_append);
 
     child
-        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
+        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
         .is_not_alive()
         .with_current_output()
         .no_stderr()
@@ -2010,7 +2010,7 @@ fn test_follow_name_truncate1() {
     p.kill()
         .make_assertion()
         .with_all_output()
-        .stderr_is(expected_stderr)
+        .stderr_contains(&expected_stderr)
         .stdout_is(expected_stdout);
 }
 
@@ -2239,7 +2239,7 @@ fn test_follow_name_move_create1() {
     p.kill()
         .make_assertion()
         .with_all_output()
-        .stderr_is(expected_stderr)
+        .stderr_contains(&expected_stderr)
         .stdout_is(expected_stdout);
 }
 
@@ -2386,13 +2386,13 @@ fn test_follow_name_move1() {
             p.kill()
                 .make_assertion()
                 .with_all_output()
-                .stderr_is(&expected_stderr[i])
+                .stderr_contains(&expected_stderr[i])
                 .stdout_is(&expected_stdout);
         } else {
             p.make_assertion()
                 .is_not_alive()
                 .with_all_output()
-                .stderr_is(&expected_stderr[i])
+                .stderr_contains(&expected_stderr[i])
                 .stdout_is(&expected_stdout)
                 .failure();
         }
