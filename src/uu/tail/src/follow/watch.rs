@@ -65,7 +65,7 @@ impl WatcherRx {
             if let Some(parent) = watch_path.parent() {
                 // Skip parent watching for /dev and similar special directories on kqueue platforms.
                 // kqueue cannot watch /dev, /proc, etc., and will return ENOTSUP.
-                // For files in these directories (like /dev/null), skip parent watching entirely.
+                // For files in these directories, watch the file directly instead of the parent.
                 #[cfg(any(
                     target_os = "macos",
                     target_os = "freebsd",
@@ -76,19 +76,36 @@ impl WatcherRx {
                 {
                     let parent_str = parent.to_string_lossy();
                     if parent_str.starts_with("/dev") || parent_str.starts_with("/proc") {
-                        // Cannot watch special FS directories; skip watching for these files.
-                        // tail will work but won't detect renames/deletes via filesystem events.
-                        return Ok(());
+                        // Don't try to watch parent; fall through to watch file directly.
+                        // If watching the file itself fails (e.g., char device), handle gracefully below.
+                    } else {
+                        // Normal case: watch parent directory
+                        // clippy::assigning_clones added with Rust 1.78
+                        // Rust version = 1.76 on OpenBSD stable/7.5
+                        #[cfg_attr(not(target_os = "openbsd"), allow(clippy::assigning_clones))]
+                        if parent.is_dir() {
+                            watch_path = parent.to_owned();
+                        } else {
+                            watch_path = PathBuf::from(".");
+                        }
                     }
                 }
-
-                // clippy::assigning_clones added with Rust 1.78
-                // Rust version = 1.76 on OpenBSD stable/7.5
-                #[cfg_attr(not(target_os = "openbsd"), allow(clippy::assigning_clones))]
-                if parent.is_dir() {
-                    watch_path = parent.to_owned();
-                } else {
-                    watch_path = PathBuf::from(".");
+                #[cfg(not(any(
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "netbsd",
+                    target_os = "dragonfly"
+                )))]
+                {
+                    // clippy::assigning_clones added with Rust 1.78
+                    // Rust version = 1.76 on OpenBSD stable/7.5
+                    #[cfg_attr(not(target_os = "openbsd"), allow(clippy::assigning_clones))]
+                    if parent.is_dir() {
+                        watch_path = parent.to_owned();
+                    } else {
+                        watch_path = PathBuf::from(".");
+                    }
                 }
             } else {
                 return Err(USimpleError::new(
@@ -101,7 +118,25 @@ impl WatcherRx {
             watch_path = watch_path.canonicalize()?;
         }
 
-        self.watch(&watch_path, RecursiveMode::NonRecursive)
+        // Try to watch the path. For special files (like /dev/null on kqueue platforms),
+        // this may fail with ENOTSUP. In such cases, tail can still function but without
+        // filesystem event notifications (will rely on polling if needed).
+        match self.watch(&watch_path, RecursiveMode::NonRecursive) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let err_str = e.to_string();
+                // Silently ignore ENOTSUP/EOPNOTSUPP for special files that can't be watched.
+                // This allows `tail -f /dev/null` and similar to work.
+                if err_str.contains("Operation not supported")
+                    || err_str.contains("not supported by device")
+                    || err_str.contains("Not supported")
+                {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     fn watch(&mut self, path: &Path, mode: RecursiveMode) -> UResult<()> {
