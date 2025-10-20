@@ -34,7 +34,7 @@ impl WatcherRx {
 
     /// Wrapper for `notify::Watcher::watch` to also add the parent directory of `path` if necessary.
     fn watch_with_parent(&mut self, path: &Path) -> UResult<()> {
-        let mut path = path.to_owned();
+        let mut watch_path = path.to_owned();
         // Apply parent directory workaround for inotify (Linux) AND kqueue (BSD/macOS)
         // This prevents issues when files are renamed/deleted while being watched.
         #[cfg(any(
@@ -45,7 +45,7 @@ impl WatcherRx {
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        if path.is_file() {
+        if watch_path.is_file() {
             /*
             NOTE: Using the parent directory instead of the file is a workaround.
             This workaround follows the recommendation of the notify crate authors:
@@ -62,29 +62,38 @@ impl WatcherRx {
             Without this, kqueue doesn't properly detect when files are deleted/renamed,
             causing --follow=name to exit prematurely instead of waiting for files to reappear.
             */
-            if let Some(parent) = path.parent() {
+            if let Some(parent) = watch_path.parent() {
                 // clippy::assigning_clones added with Rust 1.78
                 // Rust version = 1.76 on OpenBSD stable/7.5
                 #[cfg_attr(not(target_os = "openbsd"), allow(clippy::assigning_clones))]
                 if parent.is_dir() {
-                    path = parent.to_owned();
+                    watch_path = parent.to_owned();
                 } else {
-                    path = PathBuf::from(".");
+                    watch_path = PathBuf::from(".");
                 }
             } else {
                 return Err(USimpleError::new(
                     1,
-                    translate!("tail-error-cannot-watch-parent-directory", "path" => path.display()),
+                    translate!("tail-error-cannot-watch-parent-directory", "path" => watch_path.display()),
                 ));
             }
         }
-        if path.is_relative() {
-            path = path.canonicalize()?;
+        if watch_path.is_relative() {
+            watch_path = watch_path.canonicalize()?;
         }
 
-        // for syscalls: 2x "inotify_add_watch" ("filename" and ".") and 1x "inotify_rm_watch"
-        self.watch(&path, RecursiveMode::NonRecursive)?;
-        Ok(())
+        // Try to watch the path; if it fails with "Operation not supported" (e.g., /dev on kqueue),
+        // silently skip watching. This allows tail to work with device files like /dev/null
+        // even though kqueue cannot watch special filesystems like /dev.
+        match self.watch(&watch_path, RecursiveMode::NonRecursive) {
+            Ok(()) => Ok(()),
+            Err(e) if e.to_string().contains("Operation not supported") => {
+                // Parent directory watching not supported for this filesystem (e.g., /dev on FreeBSD)
+                // Fall back to direct file watching without parent directory
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn watch(&mut self, path: &Path, mode: RecursiveMode) -> UResult<()> {
