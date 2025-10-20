@@ -35,6 +35,10 @@ impl WatcherRx {
     /// Wrapper for `notify::Watcher::watch` to also add the parent directory of `path` if necessary.
     fn watch_with_parent(&mut self, path: &Path) -> UResult<()> {
         let mut watch_path = path.to_owned();
+        // Track if we're trying to watch a file in a special filesystem (like /dev or /proc)
+        // where kqueue cannot watch the parent directory.
+        let mut is_special_fs_path = false;
+
         // Apply parent directory workaround for inotify (Linux) AND kqueue (BSD/macOS)
         // This prevents issues when files are renamed/deleted while being watched.
         #[cfg(any(
@@ -78,6 +82,7 @@ impl WatcherRx {
                     if parent_str.starts_with("/dev") || parent_str.starts_with("/proc") {
                         // Don't try to watch parent; fall through to watch file directly.
                         // If watching the file itself fails (e.g., char device), handle gracefully below.
+                        is_special_fs_path = true;
                     } else {
                         // Normal case: watch parent directory
                         // clippy::assigning_clones added with Rust 1.78
@@ -125,14 +130,17 @@ impl WatcherRx {
             Ok(()) => Ok(()),
             Err(e) => {
                 let err_str = e.to_string();
-                // Silently ignore ENOTSUP/EOPNOTSUPP for special files that can't be watched.
-                // This allows `tail -f /dev/null` and similar to work.
-                if err_str.contains("Operation not supported")
-                    || err_str.contains("not supported by device")
-                    || err_str.contains("Not supported")
+                // Only silently ignore ENOTSUP/EOPNOTSUPP for special filesystem paths.
+                // For regular files, propagate the error so tail knows the watcher failed.
+                if is_special_fs_path
+                    && (err_str.contains("Operation not supported")
+                        || err_str.contains("not supported by device")
+                        || err_str.contains("Not supported"))
                 {
+                    // Special filesystem (e.g., /dev) - ignore ENOTSUP, tail will work without events
                     Ok(())
                 } else {
+                    // Regular file or different error - propagate it
                     Err(e)
                 }
             }
