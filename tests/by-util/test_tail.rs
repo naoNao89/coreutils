@@ -42,6 +42,7 @@ use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::process::Stdio;
 use tail::chunks::BUFFER_SIZE as CHUNK_BUFFER_SIZE;
+use tail::text;
 use uutests::at_and_ucmd;
 use uutests::new_ucmd;
 use uutests::random::{AlphanumericNewline, RandomizedString};
@@ -1614,12 +1615,13 @@ fn test_retry9() {
         "\
 tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
 tail: directory containing watched file was removed\n\
-tail: {BACKEND} cannot be used, reverting to polling\n\
+tail: {} cannot be used, reverting to polling\n\
 tail: 'parent_dir/watched_file' has appeared;  following new file\n\
 tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
 tail: 'parent_dir/watched_file' has appeared;  following new file\n\
 tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
-tail: 'parent_dir/watched_file' has appeared;  following new file\n"
+tail: 'parent_dir/watched_file' has appeared;  following new file\n",
+        text::BACKEND
     );
 
     #[cfg(not(target_os = "linux"))]
