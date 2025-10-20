@@ -15,7 +15,7 @@ use std::path::Path;
 use uucore::checksum::{
     ALGORITHM_OPTIONS_BLAKE2B, ALGORITHM_OPTIONS_BSD, ALGORITHM_OPTIONS_CRC,
     ALGORITHM_OPTIONS_CRC32B, ALGORITHM_OPTIONS_SYSV, ChecksumError, ChecksumOptions,
-    ChecksumVerbose, SUPPORTED_ALGORITHMS, calculate_blake2b_length, detect_algo, digest_reader,
+    ChecksumVerbose, SUPPORTED_ALGORITHMS, calculate_blake2b_length, digest_reader,
     perform_checksum_validation,
 };
 use uucore::translate;
@@ -315,19 +315,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
 
     let (tag, asterisk) = handle_tag_text_binary_flags(std::env::args_os())?;
 
-    let algo = detect_algo(algo_name, length).map_err(|e| {
-        // Remap error messages for cksum context (uses --length, not --bits)
-        let err_msg = e.to_string();
-        if err_msg.contains("--bits required for SHA3") {
-            USimpleError::new(1, "--length required for SHA3")
-        } else if err_msg.contains("--bits required for SHAKE128") {
-            USimpleError::new(1, "--length required for SHAKE128")
-        } else if err_msg.contains("--bits required for SHAKE256") {
-            USimpleError::new(1, "--length required for SHAKE256")
-        } else {
-            e
-        }
-    })?;
+    let algo = uucore::checksum::detect_algo_with_label(algo_name, length, true)?;
     let line_ending = LineEnding::from_zero_flag(matches.get_flag(options::ZERO));
 
     let output_format = if matches.get_flag(options::RAW) {
