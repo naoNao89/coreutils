@@ -49,7 +49,10 @@ impl WatcherRx {
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        if watch_path.is_file() {
+        // Check if this is a tailable file type (regular file, char device, or fifo)
+        // that needs parent directory watching. We can't just use is_file() because
+        // that returns false for character devices like /dev/null.
+        if watch_path.exists() && !watch_path.is_dir() {
             /*
             NOTE: Using the parent directory instead of the file is a workaround.
             This workaround follows the recommendation of the notify crate authors:
@@ -341,9 +344,9 @@ impl Observer {
                             // Add existing regular files to `Watcher` (InotifyWatcher).
                             watcher_rx.watch_with_parent(&path)?;
                         } else if !path.is_orphan() {
-                            // If `path` is not a tailable file, add its parent to `Watcher`.
-                            watcher_rx
-                                .watch(path.parent().unwrap(), RecursiveMode::NonRecursive)?;
+                        // If `path` is not a tailable file, add its parent to `Watcher` using the same
+                        // parent-watching logic (handles special fs like /dev or /proc on kqueue).
+                        watcher_rx.watch_with_parent(path.parent().unwrap())?;
                         } else {
                             // If there is no parent, add `path` to `orphans`.
                             self.orphans.push(path);
