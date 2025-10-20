@@ -74,6 +74,11 @@ const DEFAULT_SLEEP_INTERVAL_MILLIS: u64 = 1000;
 // For default tail (1s sleep): use 3x = 3000ms for safety
 const DELAY_FOR_TAIL_NORMAL: u64 = 3000; // For default tail -f (1s interval)
 // For tail with -s.1 (100ms sleep): use 6x = 600ms for stability
+// Increased from 3x (300ms) to 6x (600ms) based on CI failures showing that:
+// - Event notification delays vary significantly across platforms (Linux/macOS/FreeBSD)
+// - tail's event loop processing adds ~50-100ms overhead per iteration
+// - File system operations (rename, create) can take 50-150ms in CI environments
+// - 3x was insufficient margin, causing flaky tests; 6x provides reliable buffer
 const DELAY_FOR_TAIL_FAST: u64 = 600; // For tail -s.1 (100ms interval)
 
 // The binary integer "10000000" is *not* a valid UTF-8 encoding
