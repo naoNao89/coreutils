@@ -34,20 +34,35 @@ impl WatcherRx {
 
     /// Wrapper for `notify::Watcher::watch` to also add the parent directory of `path` if necessary.
     /// When using polling OR --follow=descriptor, watch the file directly.
-    /// When using inotify with --follow=name, watch the parent directory.
+    /// When using inotify with --follow=name, watch BOTH file and parent directory.
     fn watch_with_parent(&mut self, path: &Path, #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] use_polling: bool, #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] follow_name: bool) -> UResult<()> {
         let mut path = path.to_owned();
         #[cfg(target_os = "linux")]
         if path.is_file() && !use_polling && follow_name {
             /*
-            NOTE: Using the parent directory instead of the file is a workaround for inotify with --follow=name.
+            NOTE: For inotify with --follow=name, we watch BOTH file and parent.
             This workaround follows the recommendation of the notify crate authors:
             > On some platforms, if the `path` is renamed or removed while being watched, behavior may
             > be unexpected. See discussions in [#165] and [#166]. If less surprising behavior is wanted
             > one may non-recursively watch the _parent_ directory as well and manage related events.
-            NOTE: This only applies to InotifyWatcher with --follow=name. For --follow=descriptor or
-            PollWatcher, we watch the file directly.
+            
+            Watching both is necessary because:
+            - File watch: captures modification events directly
+            - Parent watch: captures reliable rename/delete events
+            
+            This only applies to InotifyWatcher with --follow=name. For --follow=descriptor or
+            PollWatcher, we watch the file directly only.
             */
+            let file_path = path.clone();
+            // First, watch the file itself for modification events
+            if file_path.is_relative() {
+                let canonical_file = file_path.canonicalize()?;
+                self.watch(&canonical_file, RecursiveMode::NonRecursive)?;
+            } else {
+                self.watch(&file_path, RecursiveMode::NonRecursive)?;
+            }
+            
+            // Also watch the parent directory for rename/delete events
             if let Some(parent) = path.parent() {
                 // clippy::assigning_clones added with Rust 1.78
                 // Rust version = 1.76 on OpenBSD stable/7.5
