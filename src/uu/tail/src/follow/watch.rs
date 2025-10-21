@@ -9,6 +9,7 @@ use crate::args::{FollowMode, Settings};
 use crate::follow::files::{FileHandling, PathData};
 use crate::paths::{Input, InputKind, MetadataExtTail, PathExtTail};
 use crate::{platform, text};
+use notify::event::{CreateKind, DataChange, EventKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher, WatcherKind};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -69,24 +70,50 @@ impl WatcherRx {
             > On some platforms, if the `path` is renamed or removed while being watched, behavior may
             > be unexpected. See discussions in [#165] and [#166]. If less surprising behavior is wanted
             > one may non-recursively watch the _parent_ directory as well and manage related events.
-            NOTE: Adding both: file and parent results in duplicate/wrong events.
-            Tested for notify::InotifyWatcher, notify::PollWatcher, and kqueue.
+
+            On Linux (inotify): Watch parent only - events report child file paths
+            On macOS/BSD (kqueue): Watch BOTH file and parent - parent alone doesn't report child events
 
             This fix applies to:
-            - Linux: inotify backend
-            - macOS/FreeBSD/OpenBSD/NetBSD/DragonFly: kqueue backend
+            - Linux: inotify backend (parent only)
+            - macOS/FreeBSD/OpenBSD/NetBSD/DragonFly: kqueue backend (both)
 
             Without this, kqueue doesn't properly detect when files are deleted/renamed,
             causing --follow=name to exit prematurely instead of waiting for files to reappear.
             */
+            let file_path = watch_path.clone();
             if let Some(parent) = watch_path.parent() {
                 if !is_special_fs_path {
-                    // Normal case: watch parent directory
+                    // Normal case: watch parent directory (and on kqueue, also the file)
                     // clippy::assigning_clones added with Rust 1.78
                     // Rust version = 1.76 on OpenBSD stable/7.5
                     #[cfg_attr(not(target_os = "openbsd"), allow(clippy::assigning_clones))]
                     if parent.is_dir() {
-                        watch_path = parent.to_owned();
+                        #[cfg(target_os = "linux")]
+                        {
+                            // Linux inotify: watch parent only
+                            watch_path = parent.to_owned();
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            // macOS/BSD kqueue: watch the file first for modification events,
+                            // then also watch parent for rename/delete detection.
+                            // kqueue doesn't send child file modification events when only
+                            // watching the parent directory, unlike Linux inotify.
+                            if let Err(e) = self.watch(&file_path, RecursiveMode::NonRecursive) {
+                                let err_str = e.to_string();
+                                if !is_special_fs_path
+                                    || !(err_str.contains("Operation not supported")
+                                        || err_str.contains("not supported by device")
+                                        || err_str.contains("Not supported")
+                                        || err_str.contains("Permission denied"))
+                                {
+                                    return Err(e);
+                                }
+                            }
+                            // Also watch parent for rename/delete detection
+                            watch_path = parent.to_owned();
+                        }
                     } else {
                         watch_path = PathBuf::from(".");
                     }
@@ -609,6 +636,82 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
                     if observer.files.contains_key(event_path) {
                         // Handle Event if it is about a path that we are monitoring
                         paths = observer.handle_event(&event, settings)?;
+                    } else {
+                        // Parent directory watching: kqueue/inotify sends events for parent dirs.
+                        // Check if event_path is a parent of any tracked files.
+                        // Determine actual file state changes and generate appropriate events.
+                        let child_paths_to_check: Vec<PathBuf> = observer
+                            .files
+                            .keys()
+                            .filter(|p| p.parent() == Some(event_path.as_path()))
+                            .cloned()
+                            .collect();
+
+                        for child_path in child_paths_to_check {
+                            // Determine what actually changed for this child file
+                            let child_exists = child_path.exists();
+                            let pd = observer.files.get(&child_path);
+                            let had_reader = pd.reader.is_some();
+                            let old_metadata_exists = pd.metadata.is_some();
+
+                            // Only process if there's an actual state change
+                            let state_changed = if child_exists {
+                                // File exists now
+                                if let Ok(new_md) = child_path.metadata() {
+                                    // Check if this represents a real change
+                                    if let Some(old_md) = &pd.metadata {
+                                        // Had metadata before - check if it changed
+                                        !old_md.file_id_eq(&new_md) || !had_reader
+                                    } else {
+                                        // No metadata before but file exists now - appeared
+                                        true
+                                    }
+                                } else {
+                                    false // Can't stat, skip
+                                }
+                            } else {
+                                // File doesn't exist now - only a change if we had it before
+                                had_reader || old_metadata_exists
+                            };
+
+                            if !state_changed {
+                                continue; // No actual change, skip this file
+                            }
+
+                            // Determine the correct event kind based on state change
+                            let child_event_kind = if child_exists {
+                                if let Ok(new_md) = child_path.metadata() {
+                                    if !old_metadata_exists || !had_reader {
+                                        // File appeared/became accessible
+                                        EventKind::Create(CreateKind::File)
+                                    } else if let Some(old_md) = &pd.metadata {
+                                        if old_md.file_id_eq(&new_md) {
+                                            // File was modified (size/mtime changed)
+                                            EventKind::Modify(ModifyKind::Data(DataChange::Any))
+                                        } else {
+                                            // File was replaced (renamed to this location)
+                                            EventKind::Modify(ModifyKind::Name(RenameMode::To))
+                                        }
+                                    } else {
+                                        EventKind::Modify(ModifyKind::Data(DataChange::Any))
+                                    }
+                                } else {
+                                    continue; // Can't stat the file, skip
+                                }
+                            } else {
+                                // File disappeared/became inaccessible
+                                EventKind::Remove(RemoveKind::File)
+                            };
+
+                            // Create event with proper kind and child path
+                            let child_event = notify::Event {
+                                kind: child_event_kind,
+                                paths: vec![child_path],
+                                attrs: event.attrs.clone(),
+                            };
+                            let child_paths = observer.handle_event(&child_event, settings)?;
+                            paths.extend(child_paths);
+                        }
                     }
                 }
             }
