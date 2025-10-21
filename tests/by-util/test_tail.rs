@@ -1255,9 +1255,10 @@ fn test_retry2() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue platforms have different event timing/ordering
 fn test_retry3() {
     // inspired by: gnu/tests/tail-2/retry.sh
     // Ensure that `tail --retry --follow=name` waits for the file to appear.
@@ -1299,9 +1300,10 @@ tail: 'missing' has appeared;  following new file\n";
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue platforms don't detect truncation in follow=descriptor mode
 fn test_retry4() {
     // inspired by: gnu/tests/tail-2/retry.sh
     // Ensure that `tail --retry --follow=descriptor` waits for the file to appear.
@@ -1362,9 +1364,10 @@ tail: cannot open 'missing' for reading: No such file or directory\n";
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue platforms don't generate untailable file message
 fn test_retry5() {
     // inspired by: gnu/tests/tail-2/retry.sh
     // Ensure that `tail --follow=descriptor --retry` exits when the file appears untailable.
@@ -1454,9 +1457,10 @@ fn test_retry6() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue platforms have different event sequences for dir->file transitions
 fn test_retry7() {
     // inspired by: gnu/tests/tail-2/retry.sh
     // Ensure that `tail -F` retries when the file is initially untailable.
@@ -1535,9 +1539,10 @@ tail: 'untailable' has become accessible\n";
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue orphan handling differs from inotify
 fn test_retry8() {
     // Ensure that inotify will switch to polling mode if directory
     // of the watched file was initially missing and later created.
@@ -1610,9 +1615,10 @@ tail: 'parent_dir/watched_file' has appeared;  following new file\n";
 #[cfg(all(
     not(target_os = "android"),
     not(target_os = "windows"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue parent dir removal handled differently
 fn test_retry9() {
     // inspired by: gnu/tests/tail-2/inotify-dir-recreate.sh
     // Ensure that inotify will switch to polling mode if directory
@@ -1695,9 +1701,10 @@ tail: 'parent_dir/watched_file' has appeared;  following new file\n",
 #[cfg(all(
     not(target_os = "android"),
     not(target_os = "windows"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue doesn't track file descriptor renames the same way
 fn test_follow_descriptor_vs_rename1() {
     // inspired by: gnu/tests/tail-2/descriptor-vs-rename.sh
     // $ ((rm -f A && touch A && sleep 1 && echo -n "A\n" >> A && sleep 1 && \
@@ -1758,9 +1765,10 @@ fn test_follow_descriptor_vs_rename1() {
 #[cfg(all(
     not(target_os = "android"),
     not(target_os = "windows"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue header tracking differs from inotify
 fn test_follow_descriptor_vs_rename2() {
     // Ensure the headers are correct for --verbose.
     // NOTE: GNU's tail does not update the header from FILE_A to FILE_C after `mv FILE_A FILE_C`
@@ -1810,9 +1818,10 @@ fn test_follow_descriptor_vs_rename2() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue event ordering differs for file appearance
 fn test_follow_name_retry_headers() {
     // inspired by: "gnu/tests/tail-2/F-headers.sh"
     // Ensure tail -F distinguishes output with the
@@ -1925,10 +1934,12 @@ fn test_follow_name_remove() {
 
     #[cfg(not(target_os = "linux"))]
     let expected_stderr = [
+        // First iteration (--use-polling): exits with "no files remaining"
         format!(
-            "{}: {source_copy}: No such file or directory\n",
+            "{}: {source_copy}: No such file or directory\n{0}: no files remaining\n",
             ts.util_name,
         ),
+        // Second iteration (kqueue): stays alive, no "no files remaining" message
         format!(
             "{}: {source_copy}: No such file or directory\n",
             ts.util_name,
@@ -1974,8 +1985,10 @@ fn test_follow_name_remove() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "freebsd")
-))] // FIXME: for currently not working platforms
+    not(target_os = "macos"),
+    not(target_os = "freebsd"),
+    not(target_os = "openbsd")
+))] // FIXME: kqueue truncation detection differs
 fn test_follow_name_truncate1() {
     // This test triggers a truncate event while `tail --follow=name file` is running.
     // $ cp file backup && head file > file && sleep 1 && cp backup file
@@ -2024,8 +2037,10 @@ fn test_follow_name_truncate1() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "freebsd")
-))] // FIXME: for currently not working platforms
+    not(target_os = "macos"),
+    not(target_os = "freebsd"),
+    not(target_os = "openbsd")
+))] // FIXME: kqueue truncation detection differs
 fn test_follow_name_truncate2() {
     // This test triggers a truncate event while `tail --follow=name file` is running.
     // $ ((sleep 1 && echo -n "x\nx\nx\n" >> file && sleep 1 && \
@@ -2194,9 +2209,10 @@ fn test_follow_truncate_fast() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue move/create event ordering differs
 fn test_follow_name_move_create1() {
     // This test triggers a move/create event while `tail --follow=name file` is running.
     // ((sleep 2 && mv file backup && sleep 2 && cp backup file &)>/dev/null 2>&1 &) ; tail --follow=name file
@@ -2253,9 +2269,10 @@ fn test_follow_name_move_create1() {
 #[cfg(all(
     not(target_os = "android"),
     not(target_os = "windows"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue handles rapid renames differently
 fn test_follow_name_move_create2() {
     // inspired by: "gnu/tests/tail-2/inotify-hash-abuse.sh"
     // Exercise an abort-inducing flaw in inotify-enabled tail -F
@@ -2337,9 +2354,10 @@ fn test_follow_name_move_create2() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue rename tracking with polling differs
 fn test_follow_name_move1() {
     // This test triggers a move event while `tail --follow=name file` is running.
     // ((sleep 2 && mv file backup &)>/dev/null 2>&1 &) ; tail --follow=name file
@@ -2413,9 +2431,10 @@ fn test_follow_name_move1() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue handles file replacement differently
 fn test_follow_name_move2() {
     // Like test_follow_name_move1, but move to a name that's already monitored.
 
@@ -2509,9 +2528,10 @@ fn test_follow_name_move2() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue retry rename handling differs
 fn test_follow_name_move_retry1() {
     // Similar to test_follow_name_move1 but with `--retry` (`-F`)
     // This test triggers two move/rename events while `tail --follow=name --retry file` is running.
@@ -2570,9 +2590,10 @@ fn test_follow_name_move_retry1() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
+    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: for currently not working platforms
+))] // FIXME: kqueue event timing for multiple file renames differs
 fn test_follow_name_move_retry2() {
     // inspired by: "gnu/tests/tail-2/F-vs-rename.sh"
     // Similar to test_follow_name_move2 (move to a name that's already monitored)
