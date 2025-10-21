@@ -360,7 +360,7 @@ fn print_file_report<W: Write>(
 pub fn detect_algo_with_label(
     algo: &str,
     length: Option<usize>,
-    use_length_label: bool,
+    is_cksum: bool,
 ) -> UResult<HashAlgorithm> {
     match algo {
         ALGORITHM_OPTIONS_SYSV => Ok(HashAlgorithm {
@@ -442,7 +442,7 @@ pub fn detect_algo_with_label(
         }),
         ALGORITHM_OPTIONS_SHAKE128 | "shake128sum" => {
             let Some(bits) = length else {
-                if use_length_label {
+                if is_cksum {
                     return Err(USimpleError::new(1, "--length required for SHAKE128"));
                 }
                 return Err(ChecksumError::BitsRequiredForShake128.into());
@@ -455,7 +455,7 @@ pub fn detect_algo_with_label(
         }
         ALGORITHM_OPTIONS_SHAKE256 | "shake256sum" => {
             let Some(bits) = length else {
-                if use_length_label {
+                if is_cksum {
                     return Err(USimpleError::new(1, "--length required for SHAKE256"));
                 }
                 return Err(ChecksumError::BitsRequiredForShake256.into());
@@ -468,7 +468,7 @@ pub fn detect_algo_with_label(
         }
         _ if algo.starts_with("sha3") => {
             let Some(bits) = length else {
-                if use_length_label {
+                if is_cksum {
                     return Err(USimpleError::new(1, "--length required for SHA3"));
                 }
                 return Err(ChecksumError::BitsRequiredForSha3.into());
