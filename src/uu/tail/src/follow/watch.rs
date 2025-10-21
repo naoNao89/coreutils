@@ -551,9 +551,28 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
         match rx_result {
             Ok(Ok(event)) => {
                 if let Some(event_path) = event.paths.first() {
+                    // For Linux, when watching parent directories, events come with the parent path,
+                    // but we need to find which of our monitored files are affected.
+                    // Check if event_path is a monitored file OR if any monitored files are children of event_path.
+                    let mut relevant_file = None;
+                    
                     if observer.files.contains_key(event_path) {
-                        // Handle Event if it is about a path that we are monitoring
-                        paths = observer.handle_event(&event, settings)?;
+                        relevant_file = Some(event_path.clone());
+                    } else {
+                        // Check if any monitored files are in this directory
+                        for monitored_path in observer.files.keys() {
+                            if monitored_path.parent() == Some(event_path) {
+                                relevant_file = Some(monitored_path.clone());
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if let Some(file_path) = relevant_file {
+                        // Create a modified event with the correct file path for handle_event
+                        let mut modified_event = event.clone();
+                        modified_event.paths = vec![file_path];
+                        paths = observer.handle_event(&modified_event, settings)?;
                     }
                 }
             }
