@@ -35,7 +35,12 @@ impl WatcherRx {
     /// Wrapper for `notify::Watcher::watch` to also add the parent directory of `path` if necessary.
     /// When using polling OR --follow=descriptor, watch the file directly.
     /// When using inotify with --follow=name, watch BOTH file and parent directory.
-    fn watch_with_parent(&mut self, path: &Path, #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] use_polling: bool, #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] follow_name: bool) -> UResult<()> {
+    fn watch_with_parent(
+        &mut self,
+        path: &Path,
+        #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] use_polling: bool,
+        #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] follow_name: bool,
+    ) -> UResult<()> {
         let mut path = path.to_owned();
         #[cfg(target_os = "linux")]
         if path.is_file() && !use_polling && follow_name {
@@ -45,11 +50,11 @@ impl WatcherRx {
             > On some platforms, if the `path` is renamed or removed while being watched, behavior may
             > be unexpected. See discussions in [#165] and [#166]. If less surprising behavior is wanted
             > one may non-recursively watch the _parent_ directory as well and manage related events.
-            
+
             Watching both is necessary because:
             - File watch: captures modification events directly
             - Parent watch: captures reliable rename/delete events
-            
+
             This only applies to InotifyWatcher with --follow=name. For --follow=descriptor or
             PollWatcher, we watch the file directly only.
             */
@@ -61,7 +66,7 @@ impl WatcherRx {
             } else {
                 self.watch(&file_path, RecursiveMode::NonRecursive)?;
             }
-            
+
             // Also watch the parent directory for rename/delete events
             if let Some(parent) = path.parent() {
                 // clippy::assigning_clones added with Rust 1.78
@@ -547,11 +552,11 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
                         _read_some = observer.files.tail_file(new_path, settings.verbose)?;
                         let use_polling = observer.use_polling;
                         let follow_name = observer.follow_name();
-                        observer
-                            .watcher_rx
-                            .as_mut()
-                            .unwrap()
-                            .watch_with_parent(new_path, use_polling, follow_name)?;
+                        observer.watcher_rx.as_mut().unwrap().watch_with_parent(
+                            new_path,
+                            use_polling,
+                            follow_name,
+                        )?;
                     }
                 }
             }
@@ -579,7 +584,7 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
                     // monitored files are affected.
                     // For --follow=descriptor, we want to handle events on the file itself.
                     let mut relevant_file = None;
-                    
+
                     if observer.files.contains_key(event_path) {
                         relevant_file = Some(event_path.clone());
                     } else if observer.follow_name() {
@@ -591,7 +596,7 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
                             }
                         }
                     }
-                    
+
                     if let Some(file_path) = relevant_file {
                         // Create a modified event with the correct file path for handle_event
                         let mut modified_event = event.clone();
