@@ -264,7 +264,10 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
                 // SHA3 and SHAKE algorithms require --length in bits
                 Some(*length)
             } else {
-                return Err(ChecksumError::LengthOnlyForBlake2b.into());
+                return Err(USimpleError::new(
+                    1,
+                    "--length is only supported with --algorithm=blake2b, sha3, shake128, or shake256",
+                ));
             }
         }
         None => None,
