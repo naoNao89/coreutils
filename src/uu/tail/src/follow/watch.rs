@@ -33,18 +33,19 @@ impl WatcherRx {
     }
 
     /// Wrapper for `notify::Watcher::watch` to also add the parent directory of `path` if necessary.
-    fn watch_with_parent(&mut self, path: &Path) -> UResult<()> {
+    /// When using polling, we watch the file directly; when using inotify, we watch the parent directory.
+    fn watch_with_parent(&mut self, path: &Path, #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] use_polling: bool) -> UResult<()> {
         let mut path = path.to_owned();
         #[cfg(target_os = "linux")]
-        if path.is_file() {
+        if path.is_file() && !use_polling {
             /*
-            NOTE: Using the parent directory instead of the file is a workaround.
+            NOTE: Using the parent directory instead of the file is a workaround for inotify.
             This workaround follows the recommendation of the notify crate authors:
             > On some platforms, if the `path` is renamed or removed while being watched, behavior may
             > be unexpected. See discussions in [#165] and [#166]. If less surprising behavior is wanted
             > one may non-recursively watch the _parent_ directory as well and manage related events.
-            NOTE: Adding both: file and parent results in duplicate/wrong events.
-            Tested for notify::InotifyWatcher and for notify::PollWatcher.
+            NOTE: This only applies to InotifyWatcher. PollWatcher sends events with the file path,
+            not the parent path, so we should watch the file directly when polling.
             */
             if let Some(parent) = path.parent() {
                 // clippy::assigning_clones added with Rust 1.78
@@ -291,7 +292,7 @@ impl Observer {
 
                         if path.is_tailable() {
                             // Add existing regular files to `Watcher` (InotifyWatcher).
-                            watcher_rx.watch_with_parent(&path)?;
+                            watcher_rx.watch_with_parent(&path, self.use_polling)?;
                         } else if !path.is_orphan() {
                             // If `path` is not a tailable file, add its parent to `Watcher`.
                             watcher_rx
@@ -477,7 +478,7 @@ impl Observer {
 
                     // Unwatch old path and watch new path
                     let _ = self.watcher_rx.as_mut().unwrap().unwatch(event_path);
-                    self.watcher_rx.as_mut().unwrap().watch_with_parent(new_path)?;
+                    self.watcher_rx.as_mut().unwrap().watch_with_parent(new_path, self.use_polling)?;
                 }
             }
             _ => {}
@@ -528,7 +529,7 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
                             .watcher_rx
                             .as_mut()
                             .unwrap()
-                            .watch_with_parent(new_path)?;
+                            .watch_with_parent(new_path, observer.use_polling)?;
                     }
                 }
             }
