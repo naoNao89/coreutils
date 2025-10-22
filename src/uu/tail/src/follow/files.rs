@@ -12,9 +12,70 @@ use crate::text;
 use std::collections::HashMap;
 use std::collections::hash_map::Keys;
 use std::fs::{File, Metadata};
-use std::io::{BufRead, BufReader, BufWriter, Write, stdout};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write, stdout};
 use std::path::{Path, PathBuf};
 use uucore::error::UResult;
+
+/// Combined trait for readers that support both buffered reading and seeking.
+/// This allows us to detect file growth after renames in polling mode.
+pub trait BufReadSeek: BufRead + Seek + Send {}
+
+/// Blanket implementation for any type that implements BufRead, Seek, and Send
+impl<T: BufRead + Seek + Send> BufReadSeek for T {}
+
+/// Wrapper for non-seekable readers (like stdin) that implements Seek as a no-op.
+/// This allows stdin to work with the BufReadSeek trait without actual seeking capability.
+pub struct NonSeekableReader<R: BufRead + Send> {
+    inner: R,
+}
+
+impl<R: BufRead + Send> NonSeekableReader<R> {
+    pub fn new(inner: R) -> Self {
+        Self { inner }
+    }
+}
+
+impl<R: BufRead + Send> Read for NonSeekableReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<R: BufRead + Send> BufRead for NonSeekableReader<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.inner.consume(amt)
+    }
+}
+
+impl<R: BufRead + Send> Seek for NonSeekableReader<R> {
+    fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+        // No-op for non-seekable readers like stdin
+        Ok(0)
+    }
+}
+
+/// Identifies the source of a file system event
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchSource {
+    /// Event originated from watching the file directly
+    File,
+    /// Event originated from watching the parent directory
+    /// (only used in Linux inotify + --follow=name mode)
+    ParentDirectory,
+}
+
+/// Tracks watch metadata for a monitored file
+#[derive(Debug, Clone)]
+pub struct WatchedPath {
+    /// The file being monitored
+    pub file_path: PathBuf,
+    /// Parent directory watch (if enabled)
+    pub parent_path: Option<PathBuf>,
+}
 
 /// Data structure to keep a handle on files to follow.
 /// `last` always holds the path/key of the last file that was printed from.
@@ -22,7 +83,7 @@ use uucore::error::UResult;
 /// or stdin ("-"), or to a non-existing path (--retry).
 /// For existing files, all keys in the [`HashMap`] are absolute Paths.
 pub struct FileHandling {
-    map: HashMap<PathBuf, PathData>,
+    map: HashMap<PathBuf, (PathData, Option<WatchedPath>)>,
     last: Option<PathBuf>,
     header_printer: HeaderPrinter,
 }
@@ -38,26 +99,44 @@ impl FileHandling {
 
     /// Wrapper for [`HashMap::insert`] using [`Path::canonicalize`]
     pub fn insert(&mut self, k: &Path, v: PathData, update_last: bool) {
+        self.insert_with_watch(k, v, None, update_last);
+    }
+
+    /// Insert a file with optional watch metadata
+    pub fn insert_with_watch(
+        &mut self,
+        k: &Path,
+        v: PathData,
+        watch_info: Option<WatchedPath>,
+        update_last: bool,
+    ) {
         let k = Self::canonicalize_path(k);
         if update_last {
             self.last = Some(k.clone());
         }
-        let _ = self.map.insert(k, v);
+        let _ = self.map.insert(k, (v, watch_info));
     }
 
     /// Wrapper for [`HashMap::remove`] using [`Path::canonicalize`]
     pub fn remove(&mut self, k: &Path) -> PathData {
-        self.map.remove(&Self::canonicalize_path(k)).unwrap()
+        self.map.remove(&Self::canonicalize_path(k)).unwrap().0
     }
 
     /// Wrapper for [`HashMap::get`] using [`Path::canonicalize`]
     pub fn get(&self, k: &Path) -> &PathData {
-        self.map.get(&Self::canonicalize_path(k)).unwrap()
+        &self.map.get(&Self::canonicalize_path(k)).unwrap().0
     }
 
     /// Wrapper for [`HashMap::get_mut`] using [`Path::canonicalize`]
     pub fn get_mut(&mut self, k: &Path) -> &mut PathData {
-        self.map.get_mut(&Self::canonicalize_path(k)).unwrap()
+        &mut self.map.get_mut(&Self::canonicalize_path(k)).unwrap().0
+    }
+
+    /// Get watch metadata for a path
+    pub fn get_watch_info(&self, k: &Path) -> Option<&WatchedPath> {
+        self.map
+            .get(&Self::canonicalize_path(k))
+            .and_then(|(_, watch)| watch.as_ref())
     }
 
     /// Canonicalize `path` if it is not already an absolute path
@@ -74,7 +153,7 @@ impl FileHandling {
         self.get_mut(path).metadata.as_ref()
     }
 
-    pub fn keys(&self) -> Keys<'_, PathBuf, PathData> {
+    pub fn keys(&self) -> Keys<'_, PathBuf, (PathData, Option<WatchedPath>)> {
         self.map.keys()
     }
 
@@ -175,14 +254,14 @@ impl FileHandling {
 /// Data structure to keep a handle on the [`BufReader`], [`Metadata`]
 /// and the `display_name` (`header_name`) of files that are being followed.
 pub struct PathData {
-    pub reader: Option<Box<dyn BufRead>>,
+    pub reader: Option<Box<dyn BufReadSeek>>,
     pub metadata: Option<Metadata>,
     pub display_name: String,
 }
 
 impl PathData {
     pub fn new(
-        reader: Option<Box<dyn BufRead>>,
+        reader: Option<Box<dyn BufReadSeek>>,
         metadata: Option<Metadata>,
         display_name: &str,
     ) -> Self {
@@ -192,6 +271,7 @@ impl PathData {
             display_name: display_name.to_owned(),
         }
     }
+
     pub fn from_other_with_path(data: Self, path: &Path) -> Self {
         // Remove old reader
         let old_reader = data.reader;
@@ -200,7 +280,7 @@ impl PathData {
             old_reader
         } else if let Ok(file) = File::open(path) {
             // Open new file tail from start
-            Some(Box::new(BufReader::new(file)) as Box<dyn BufRead>)
+            Some(Box::new(BufReader::new(file)) as Box<dyn BufReadSeek>)
         } else {
             // Probably file was renamed/moved or removed again
             None
