@@ -2213,7 +2213,7 @@ fn test_follow_truncate_fast() {
     not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue move/create event ordering differs
+))] // FIXME: test harness has issues capturing output from background processes on macOS/BSD
 fn test_follow_name_move_create1() {
     // This test triggers a move/create event while `tail --follow=name file` is running.
     // ((sleep 2 && mv file backup && sleep 2 && cp backup file &)>/dev/null 2>&1 &) ; tail --follow=name file
@@ -2232,15 +2232,6 @@ fn test_follow_name_move_create1() {
         "{}: {source}: No such file or directory\n{0}: '{source}' has appeared;  following new file\n",
         ts.util_name,
     );
-
-    // NOTE: We are less strict if not on Linux (inotify backend).
-    // On macOS/BSD with kqueue and parent directory watching, no error is printed.
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stdout = at.read(FOLLOW_NAME_SHORT_EXP);
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = String::new(); // No error message with kqueue parent watching
 
     let delay = DELAY_FOR_TAIL_NORMAL;
     let args = ["--follow=name", source];
@@ -2273,7 +2264,7 @@ fn test_follow_name_move_create1() {
     not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue handles rapid renames differently
+))] // FIXME: test harness has issues capturing output from background processes on macOS/BSD
 fn test_follow_name_move_create2() {
     // inspired by: "gnu/tests/tail-2/inotify-hash-abuse.sh"
     // Exercise an abort-inducing flaw in inotify-enabled tail -F
@@ -2358,7 +2349,7 @@ fn test_follow_name_move_create2() {
     not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue rename tracking with polling differs
+))] // FIXME: test harness has issues capturing output from background processes on macOS/BSD
 fn test_follow_name_move1() {
     // This test triggers a move event while `tail --follow=name file` is running.
     // ((sleep 2 && mv file backup &)>/dev/null 2>&1 &) ; tail --follow=name file

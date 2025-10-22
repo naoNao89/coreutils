@@ -193,14 +193,32 @@ impl FileHandling {
     /// Reopen the file at the monitored `path`
     pub fn update_reader(&mut self, path: &Path) -> UResult<()> {
         /*
-        BUG: If it's not necessary to reopen a file, GNU's tail calls seek to offset 0.
-        However, we can't call seek here because `BufRead` does not implement `Seek`.
-        As a workaround, we always reopen the file even though this might not always
-        be necessary.
+        When a file is recreated or truncated, we need to:
+        1. Open a new file handle
+        2. Determine the appropriate seek position:
+           - If the file has grown beyond the last known position, seek to that position
+           - If the file has shrunk (truncated), seek to the beginning
+        3. This ensures we capture new content without re-outputting old content
         */
-        self.get_mut(path)
-            .reader
-            .replace(Box::new(BufReader::new(File::open(path)?)));
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        
+        // Get the last known file size from metadata
+        let last_known_size = self.get(path).metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        
+        // Get the current file size
+        let current_size = reader.get_ref().metadata().map(|m| m.len()).unwrap_or(0);
+        
+        // If the file is at least as large as before, seek to the last known position
+        // Otherwise, seek to the beginning (file was truncated)
+        let seek_pos = if current_size >= last_known_size {
+            last_known_size
+        } else {
+            0
+        };
+        
+        reader.seek(std::io::SeekFrom::Start(seek_pos))?;
+        self.get_mut(path).reader = Some(Box::new(reader));
         Ok(())
     }
 

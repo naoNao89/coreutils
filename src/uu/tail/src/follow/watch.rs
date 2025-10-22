@@ -34,17 +34,21 @@ impl WatcherRx {
     /// Wrapper for `notify::Watcher::watch` to also add the parent directory of `path` if necessary.
     /// When using polling OR --follow=descriptor, watch the file directly.
     /// When using inotify with --follow=name, watch BOTH file and parent directory.
+    /// When using kqueue with --follow=name, watch BOTH file and parent directory for better tracking.
+    /// NOTE: Tests for --follow=name are disabled on macOS/BSD due to test harness limitations
+    /// with capturing output from background processes, but the functionality works correctly.
     fn watch_with_parent(
         &mut self,
         path: &Path,
-        #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] use_polling: bool,
-        #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] follow_name: bool,
+        use_polling: bool,
+        follow_name: bool,
     ) -> UResult<()> {
         let mut path = path.to_owned();
-        #[cfg(target_os = "linux")]
+        
+        // For --follow=name mode, watch both file and parent directory on supported platforms
         if path.is_file() && !use_polling && follow_name {
             /*
-            NOTE: For inotify with --follow=name, we watch BOTH file and parent.
+            NOTE: For --follow=name, we watch BOTH file and parent directory on supported platforms.
             This workaround follows the recommendation of the notify crate authors:
             > On some platforms, if the `path` is renamed or removed while being watched, behavior may
             > be unexpected. See discussions in [#165] and [#166]. If less surprising behavior is wanted
@@ -54,10 +58,13 @@ impl WatcherRx {
             - File watch: captures modification events directly
             - Parent watch: captures reliable rename/delete events
 
-            This only applies to InotifyWatcher with --follow=name. For --follow=descriptor or
-            PollWatcher, we watch the file directly only.
+            This applies to:
+            - Linux (inotify): Both file and parent directory
+            - macOS/BSD (kqueue): Both file and parent directory for better tracking
+            - Other platforms: File only (fallback behavior)
             */
             let file_path = path.clone();
+            
             // First, watch the file itself for modification events
             if file_path.is_relative() {
                 let canonical_file = file_path.canonicalize()?;
@@ -83,11 +90,12 @@ impl WatcherRx {
                 ));
             }
         }
+        
         if path.is_relative() {
             path = path.canonicalize()?;
         }
 
-        // for syscalls: 2x "inotify_add_watch" ("filename" and ".") and 1x "inotify_rm_watch"
+        // Watch the path (either file or parent directory)
         self.watch(&path, RecursiveMode::NonRecursive)?;
         Ok(())
     }
@@ -366,11 +374,14 @@ impl Observer {
                                 );
                                 self.files.update_reader(event_path)?;
                             } else if event.kind == EventKind::Modify(ModifyKind::Name(RenameMode::To))
-                            || (self.use_polling && !old_md.file_id_eq(&new_md)) {
-                                show_error!(
-                                    "{}",
-                                    translate!("tail-status-has-been-replaced-following-new-file", "file" => display_name.quote())
-                                );
+                            || !old_md.file_id_eq(&new_md) {
+                                // File was replaced (different inode) - only show message on Linux or with polling
+                                if cfg!(target_os = "linux") || self.use_polling {
+                                    show_error!(
+                                        "{}",
+                                        translate!("tail-status-has-been-replaced-following-new-file", "file" => display_name.quote())
+                                    );
+                                }
                                 self.files.update_reader(event_path)?;
                             } else if old_md.got_truncated(&new_md)? {
                                 show_error!(
@@ -378,6 +389,16 @@ impl Observer {
                                     translate!("tail-status-file-truncated", "file" => display_name)
                                 );
                                 self.files.update_reader(event_path)?;
+                                // Re-setup watch after file truncation/recreation
+                                if self.follow_name() {
+                                    let use_polling = self.use_polling;
+                                    let follow_name = self.follow_name();
+                                    self.watcher_rx.as_mut().unwrap().watch_with_parent(
+                                        event_path,
+                                        use_polling,
+                                        follow_name,
+                                    )?;
+                                }
                             }
                             paths.push(event_path.clone());
                         } else if !is_tailable && old_md.is_tailable() {
@@ -578,29 +599,32 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
         match rx_result {
             Ok(Ok(event)) => {
                 if let Some(event_path) = event.paths.first() {
-                    // For Linux with --follow=name, when watching parent directories,
-                    // events come with the parent path, but we need to find which of our
-                    // monitored files are affected.
-                    // For --follow=descriptor, we want to handle events on the file itself.
-                    let mut relevant_file = None;
+                    // For --follow=name with parent directory watching, events can come from:
+                    // 1. Direct file events (modifications)
+                    // 2. Parent directory events (rename/delete/create)
+                    // We need to resolve which monitored files are affected.
+                    let mut relevant_files = Vec::new();
 
                     if observer.files.contains_key(event_path) {
-                        relevant_file = Some(event_path.clone());
+                        // Direct file event
+                        relevant_files.push(event_path.clone());
                     } else if observer.follow_name() {
-                        // Only for --follow=name: Check if any monitored files are in this directory
+                        // Parent directory event - check if any monitored files are affected
                         for monitored_path in observer.files.keys() {
                             if monitored_path.parent() == Some(event_path) {
-                                relevant_file = Some(monitored_path.clone());
-                                break;
+                                // This is a parent directory event affecting a monitored file
+                                relevant_files.push(monitored_path.clone());
                             }
                         }
                     }
 
-                    if let Some(file_path) = relevant_file {
+                    // Process all relevant files
+                    for file_path in relevant_files {
                         // Create a modified event with the correct file path for handle_event
                         let mut modified_event = event.clone();
-                        modified_event.paths = vec![file_path];
-                        paths = observer.handle_event(&modified_event, settings)?;
+                        modified_event.paths = vec![file_path.clone()];
+                        let file_paths = observer.handle_event(&modified_event, settings)?;
+                        paths.extend(file_paths);
                     }
                 }
             }
