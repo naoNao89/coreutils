@@ -545,6 +545,21 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
 
     let mut timeout_counter = 0;
 
+    // Ensure we attempt an initial read tick so tests that expect content after a
+    // quick rename/create do not miss early bytes due to watcher latency.
+    // This mirrors GNU tail behaviour where an immediate poll occurs.
+    {
+        let mut initial_paths: Vec<std::path::PathBuf> = Vec::new();
+        for p in observer.files.keys() {
+            if p.exists() {
+                initial_paths.push(p.clone());
+            }
+        }
+        for path in &initial_paths {
+            let _ = observer.files.tail_file(path, settings.verbose)?;
+        }
+    }
+
     // main follow loop
     loop {
         let mut _read_some = false;
@@ -654,6 +669,25 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
                                 modified_event.kind = notify::EventKind::Create(notify::event::CreateKind::File);
                                 paths = observer.handle_event(&modified_event, settings)?;
                                 break;
+                            }
+                        }
+                    }
+
+                    // Fallback for parent-directory notifications on Linux: when we receive a
+                    // directory event (e.g., rename/create/remove in the watched parent), push all
+                    // monitored files under that directory to be checked for new content.
+                    if paths.is_empty() && observer.follow_name() {
+                        if let Ok(md) = event_path.metadata() {
+                            if md.is_dir() {
+                                let mut collected: Vec<std::path::PathBuf> = Vec::new();
+                                for monitored_path in observer.files.keys() {
+                                    if monitored_path.parent() == Some(event_path) {
+                                        collected.push(monitored_path.clone());
+                                    }
+                                }
+                                if !collected.is_empty() {
+                                    paths = collected;
+                                }
                             }
                         }
                     }
