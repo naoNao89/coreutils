@@ -599,32 +599,29 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
         match rx_result {
             Ok(Ok(event)) => {
                 if let Some(event_path) = event.paths.first() {
-                    // For --follow=name with parent directory watching, events can come from:
-                    // 1. Direct file events (modifications)
-                    // 2. Parent directory events (rename/delete/create)
-                    // We need to resolve which monitored files are affected.
-                    let mut relevant_files = Vec::new();
+                    // For Linux with --follow=name, when watching parent directories,
+                    // events come with the parent path, but we need to find which of our
+                    // monitored files are affected.
+                    // For --follow=descriptor, we want to handle events on the file itself.
+                    let mut relevant_file = None;
 
                     if observer.files.contains_key(event_path) {
-                        // Direct file event
-                        relevant_files.push(event_path.clone());
+                        relevant_file = Some(event_path.clone());
                     } else if observer.follow_name() {
-                        // Parent directory event - check if any monitored files are affected
+                        // Only for --follow=name: Check if any monitored files are in this directory
                         for monitored_path in observer.files.keys() {
                             if monitored_path.parent() == Some(event_path) {
-                                // This is a parent directory event affecting a monitored file
-                                relevant_files.push(monitored_path.clone());
+                                relevant_file = Some(monitored_path.clone());
+                                break;
                             }
                         }
                     }
 
-                    // Process all relevant files
-                    for file_path in relevant_files {
+                    if let Some(file_path) = relevant_file {
                         // Create a modified event with the correct file path for handle_event
                         let mut modified_event = event.clone();
-                        modified_event.paths = vec![file_path.clone()];
-                        let file_paths = observer.handle_event(&modified_event, settings)?;
-                        paths.extend(file_paths);
+                        modified_event.paths = vec![file_path];
+                        paths = observer.handle_event(&modified_event, settings)?;
                     }
                 }
             }
