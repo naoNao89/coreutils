@@ -6,11 +6,10 @@
 // spell-checker:ignore (ToDO) tailable untailable stdlib kqueue Uncategorized unwatch
 
 use crate::args::{FollowMode, Settings};
-use crate::follow::files::{FileHandling, PathData};
+use crate::follow::files::{BufReadSeek, FileHandling, PathData};
 use crate::paths::{Input, InputKind, MetadataExtTail, PathExtTail};
 use crate::{platform, text};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher, WatcherKind};
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, channel};
 use uucore::display::Quotable;
@@ -164,7 +163,7 @@ impl Observer {
         &mut self,
         path: &Path,
         display_name: &str,
-        reader: Option<Box<dyn BufRead>>,
+        reader: Option<Box<dyn BufReadSeek>>,
         update_last: bool,
     ) -> UResult<()> {
         if self.follow.is_some() {
@@ -187,7 +186,7 @@ impl Observer {
     pub fn add_stdin(
         &mut self,
         display_name: &str,
-        reader: Option<Box<dyn BufRead>>,
+        reader: Option<Box<dyn BufReadSeek>>,
         update_last: bool,
     ) -> UResult<()> {
         if self.follow == Some(FollowMode::Descriptor) {
