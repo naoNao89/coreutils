@@ -68,8 +68,10 @@ impl WatcherRx {
             // First, watch the file itself for modification events
             if file_path.is_relative() {
                 let canonical_file = file_path.canonicalize()?;
+                // eprintln!("DEBUG: Watching file: {:?}", canonical_file);
                 self.watch(&canonical_file, RecursiveMode::NonRecursive)?;
             } else {
+                // eprintln!("DEBUG: Watching file: {:?}", file_path);
                 self.watch(&file_path, RecursiveMode::NonRecursive)?;
             }
 
@@ -96,6 +98,7 @@ impl WatcherRx {
         }
 
         // Watch the path (either file or parent directory)
+        // eprintln!("DEBUG: Watching path: {:?}", path);
         self.watch(&path, RecursiveMode::NonRecursive)?;
         Ok(())
     }
@@ -599,6 +602,10 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
         match rx_result {
             Ok(Ok(event)) => {
                 if let Some(event_path) = event.paths.first() {
+                    // Debug: Print event information (remove in production)
+                    // eprintln!("DEBUG: Received event: {:?} on path: {:?}", event.kind, event_path);
+                    // eprintln!("DEBUG: Monitored files: {:?}", observer.files.keys().collect::<Vec<_>>());
+                    
                     // For Linux with --follow=name, when watching parent directories,
                     // events come with the parent path, but we need to find which of our
                     // monitored files are affected.
@@ -607,12 +614,25 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
 
                     if observer.files.contains_key(event_path) {
                         relevant_file = Some(event_path.clone());
+                        // eprintln!("DEBUG: Direct file event for: {:?}", event_path);
                     } else if observer.follow_name() {
                         // Only for --follow=name: Check if any monitored files are in this directory
                         for monitored_path in observer.files.keys() {
                             if monitored_path.parent() == Some(event_path) {
                                 relevant_file = Some(monitored_path.clone());
+                                // eprintln!("DEBUG: Parent directory event for: {:?} -> {:?}", event_path, monitored_path);
                                 break;
+                            }
+                        }
+                        
+                        // Also check if the event path is a parent directory of any monitored file
+                        if relevant_file.is_none() {
+                            for monitored_path in observer.files.keys() {
+                                if monitored_path.starts_with(event_path) {
+                                    relevant_file = Some(monitored_path.clone());
+                                    // eprintln!("DEBUG: Parent directory (starts_with) event for: {:?} -> {:?}", event_path, monitored_path);
+                                    break;
+                                }
                             }
                         }
                     }
@@ -622,6 +642,20 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
                         let mut modified_event = event.clone();
                         modified_event.paths = vec![file_path];
                         paths = observer.handle_event(&modified_event, settings)?;
+                    } else if observer.follow_name() {
+                        // For --follow=name, if no relevant file was found but we're following by name,
+                        // check if any of our monitored files have been recreated
+                        for monitored_path in observer.files.keys() {
+                            if monitored_path.exists() {
+                                // File exists, check if it has new content
+                                // eprintln!("DEBUG: File recreated: {:?}", monitored_path);
+                                let mut modified_event = event.clone();
+                                modified_event.paths = vec![monitored_path.clone()];
+                                modified_event.kind = notify::EventKind::Create(notify::event::CreateKind::File);
+                                paths = observer.handle_event(&modified_event, settings)?;
+                                break;
+                            }
+                        }
                     }
                 }
             }
