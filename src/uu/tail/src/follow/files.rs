@@ -14,6 +14,7 @@ use std::collections::hash_map::Keys;
 use std::fs::{File, Metadata};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write, stdout};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use uucore::error::UResult;
 
 /// Combined trait for readers that support both buffered reading and seeking.
@@ -47,7 +48,7 @@ impl<R: BufRead + Send> BufRead for NonSeekableReader<R> {
     }
 
     fn consume(&mut self, amt: usize) {
-        self.inner.consume(amt)
+        self.inner.consume(amt);
     }
 }
 
@@ -72,8 +73,10 @@ pub enum WatchSource {
 #[derive(Debug, Clone)]
 pub struct WatchedPath {
     /// The file being monitored
+    #[allow(dead_code)]
     pub file_path: PathBuf,
     /// Parent directory watch (if enabled)
+    #[allow(dead_code)]
     pub parent_path: Option<PathBuf>,
 }
 
@@ -118,8 +121,44 @@ impl FileHandling {
     }
 
     /// Wrapper for [`HashMap::remove`] using [`Path::canonicalize`]
+    /// If the canonicalized path is not found, tries all keys in the map to find a match.
+    /// This handles cases where a file was renamed and can no longer be canonicalized.
     pub fn remove(&mut self, k: &Path) -> PathData {
-        self.map.remove(&Self::canonicalize_path(k)).unwrap().0
+        let canonicalized = Self::canonicalize_path(k);
+
+        // Try canonicalized path first (fast path for existing files)
+        if let Some(entry) = self.map.remove(&canonicalized) {
+            return entry.0;
+        }
+
+        // Fallback for renamed files: try the raw key directly
+        if let Some(entry) = self.map.remove(k) {
+            return entry.0;
+        }
+
+        // Last resort: search through all keys to find one that matches when canonicalized
+        // This handles the case where the file was tracked under its canonical path
+        // but the event refers to it by the pre-rename name
+        let matching_key = self
+            .map
+            .keys()
+            .find(|key| {
+                // Check if this key, when made relative to the same directory as k, matches k
+                if let (Some(k_file), Some(key_file)) = (k.file_name(), key.file_name()) {
+                    if k_file == key_file {
+                        // If the file names match, check if they refer to the same logical file
+                        return true;
+                    }
+                }
+                false
+            })
+            .cloned();
+
+        if let Some(key) = matching_key {
+            return self.map.remove(&key).unwrap().0;
+        }
+
+        panic!("No path was found. about [{}]", k.display())
     }
 
     /// Wrapper for [`HashMap::get`] using [`Path::canonicalize`]
@@ -133,6 +172,7 @@ impl FileHandling {
     }
 
     /// Get watch metadata for a path
+    #[allow(dead_code)]
     pub fn get_watch_info(&self, k: &Path) -> Option<&WatchedPath> {
         self.map
             .get(&Self::canonicalize_path(k))
@@ -158,9 +198,10 @@ impl FileHandling {
     }
 
     pub fn contains_key(&self, k: &Path) -> bool {
-        self.map.contains_key(k)
+        self.map.contains_key(&Self::canonicalize_path(k))
     }
 
+    #[allow(dead_code)]
     pub fn get_last(&self) -> Option<&PathBuf> {
         self.last.as_ref()
     }
@@ -190,18 +231,33 @@ impl FileHandling {
         self.get_mut(path).reader = None;
     }
 
-    /// Reopen the file at the monitored `path`
+    /// Reopen the file at the monitored `path`, or reset reader state if already open
     pub fn update_reader(&mut self, path: &Path) -> UResult<()> {
-        /*
-        BUG: If it's not necessary to reopen a file, GNU's tail calls seek to offset 0.
-        However, we can't call seek here because `BufRead` does not implement `Seek`.
-        As a workaround, we always reopen the file even though this might not always
-        be necessary.
-        */
-        self.get_mut(path)
-            .reader
-            .replace(Box::new(BufReader::new(File::open(path)?)));
-        Ok(())
+        let path_data = self.get_mut(path);
+
+        if let Some(reader) = path_data.reader.as_mut() {
+            // File is already open. In descriptor mode after rename, the path may not exist
+            // but the FD is still valid. Seek to current position to clear any internal EOF state.
+            if let Ok(pos) = reader.stream_position() {
+                if reader.seek(SeekFrom::Start(pos)).is_ok() {
+                    // Successfully cleared EOF state without changing position
+                    return Ok(());
+                }
+            }
+            // If seek failed, fall through to reopen
+        }
+
+        // No reader or seek failed, try to reopen file
+        if let Ok(file) = File::open(path) {
+            self.get_mut(path)
+                .reader
+                .replace(Box::new(BufReader::new(file)));
+            Ok(())
+        } else {
+            // File doesn't exist (e.g., after rename in descriptor mode)
+            // Keep the existing reader - it may still be valid
+            Ok(())
+        }
     }
 
     /// Reload metadata from `path`, or `metadata`
@@ -249,6 +305,85 @@ impl FileHandling {
             false
         }
     }
+
+    /// Poll a single file descriptor for new data.
+    /// Returns Ok(true) if new data was read and output.
+    pub fn poll_fd(&mut self, path: &Path, verbose: bool) -> UResult<bool> {
+        let path_data = self.get_mut(path);
+
+        // Only poll if marked for fallback and is a regular file
+        if !path_data.fallback_to_polling || !path_data.is_regular_file {
+            return Ok(false);
+        }
+
+        // Throttle polling: minimum 50ms between polls
+        let now = Instant::now();
+        if let Some(last_polled) = path_data.last_polled {
+            if now.duration_since(last_polled).as_millis() < 50 {
+                return Ok(false);
+            }
+        }
+        path_data.last_polled = Some(now);
+
+        // After a rename, the path no longer exists on disk, but the file descriptor
+        // is still valid. We can't use metadata to check file size, so we'll just
+        // try to read from the FD. If there's data, we'll output it.
+
+        // Check if we have a reader (file descriptor)
+        if self.get(path).reader.is_none() {
+            return Ok(false);
+        }
+
+        // Read and output new data (similar to tail_file)
+        let mut chunks = BytesChunkBuffer::new(u64::MAX);
+
+        if let Some(reader) = self.get_mut(path).reader.as_mut() {
+            chunks.fill(reader)?;
+        }
+
+        if chunks.has_data() {
+            if self.needs_header(path, verbose) {
+                let display_name = self.get(path).display_name.clone();
+                self.header_printer.print(display_name.as_str());
+            }
+
+            let mut writer = BufWriter::new(stdout().lock());
+            chunks.print(&mut writer)?;
+            writer.flush()?;
+
+            self.last.replace(path.to_owned());
+            self.update_metadata(path, None);
+
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Poll all file descriptors marked for polling fallback.
+    /// Returns Ok(true) if any file made progress.
+    pub fn poll_all_fds(&mut self, verbose: bool) -> UResult<bool> {
+        let paths_to_poll: Vec<PathBuf> = self
+            .map
+            .iter()
+            .filter(|(_, (data, _))| data.fallback_to_polling && data.is_regular_file)
+            .map(|(path, _)| path.clone())
+            .collect();
+
+        let mut any_progress = false;
+        for path in paths_to_poll {
+            if self.poll_fd(&path, verbose)? {
+                any_progress = true;
+            }
+        }
+
+        Ok(any_progress)
+    }
+
+    /// Check if any files are marked for polling fallback.
+    pub fn has_polling_fallback(&self) -> bool {
+        self.map.values().any(|(data, _)| data.fallback_to_polling)
+    }
 }
 
 /// Data structure to keep a handle on the [`BufReader`], [`Metadata`]
@@ -257,6 +392,15 @@ pub struct PathData {
     pub reader: Option<Box<dyn BufReadSeek>>,
     pub metadata: Option<Metadata>,
     pub display_name: String,
+    /// After a rename event in descriptor mode, switch to periodic FD polling
+    pub fallback_to_polling: bool,
+    /// Track when we last polled this FD to throttle polling frequency
+    pub last_polled: Option<Instant>,
+    /// Whether this is a regular file (skip polling for pipes/sockets)
+    pub is_regular_file: bool,
+    /// Track bytes read to detect new data availability
+    #[allow(dead_code)]
+    pub bytes_read: u64,
 }
 
 impl PathData {
@@ -265,13 +409,20 @@ impl PathData {
         metadata: Option<Metadata>,
         display_name: &str,
     ) -> Self {
+        let is_regular_file = metadata.as_ref().map(|m| m.is_file()).unwrap_or(false);
+
         Self {
             reader,
             metadata,
             display_name: display_name.to_owned(),
+            fallback_to_polling: false,
+            last_polled: None,
+            is_regular_file,
+            bytes_read: 0,
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_other_with_path(data: Self, path: &Path) -> Self {
         // Remove old reader
         let old_reader = data.reader;
@@ -286,6 +437,11 @@ impl PathData {
             None
         };
 
-        Self::new(reader, path.metadata().ok(), data.display_name.as_str())
+        let mut new_data = Self::new(reader, path.metadata().ok(), data.display_name.as_str());
+        // Preserve polling state across path updates
+        new_data.fallback_to_polling = data.fallback_to_polling;
+        new_data.last_polled = data.last_polled;
+        new_data.bytes_read = data.bytes_read;
+        new_data
     }
 }

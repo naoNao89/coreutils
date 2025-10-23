@@ -14,12 +14,14 @@
 )]
 
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
     not(target_os = "freebsd")
 ))]
 use nix::sys::signal::{Signal, kill};
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
     not(target_os = "freebsd")
@@ -34,16 +36,22 @@ use std::io::Write;
 #[cfg(not(target_vendor = "apple"))]
 use std::io::{Seek, SeekFrom};
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "android"),
     not(target_os = "windows"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
 ))]
 use std::path::Path;
 use std::process::Stdio;
 use tail::chunks::BUFFER_SIZE as CHUNK_BUFFER_SIZE;
-#[cfg(target_os = "linux")]
+#[cfg(all(
+    not(target_vendor = "apple"),
+    not(target_os = "android"),
+    not(target_os = "windows"),
+    not(target_os = "freebsd"),
+    not(target_os = "openbsd")
+))]
 use tail::text;
 use uutests::at_and_ucmd;
 use uutests::new_ucmd;
@@ -69,19 +77,6 @@ const FOLLOW_NAME_SHORT_EXP: &str = "follow_name_short.expected";
 const FOLLOW_NAME_EXP: &str = "follow_name.expected";
 
 const DEFAULT_SLEEP_INTERVAL_MILLIS: u64 = 1000;
-
-// Delay values for reliable test execution, accounting for tail's event processing
-// These must be > tail's sleep interval to avoid race conditions in CI
-// For default tail (1s sleep): use 3x = 3000ms for safety
-const DELAY_FOR_TAIL_NORMAL: u64 = 3000; // For default tail -f (1s interval)
-// For tail with -s.1 (100ms sleep): use 6x = 600ms for stability
-// Increased from 3x (300ms) to 6x (600ms) based on CI failures showing that:
-// - Event notification delays vary significantly across platforms (Linux/macOS/FreeBSD)
-// - tail's event loop processing adds ~50-100ms overhead per iteration
-// - File system operations (rename, create) can take 50-150ms in CI environments
-// - 3x was insufficient margin, causing flaky tests; 6x provides reliable buffer
-#[cfg(not(target_os = "windows"))]
-const DELAY_FOR_TAIL_FAST: u64 = 600; // For tail -s.1 (100ms interval)
 
 // The binary integer "10000000" is *not* a valid UTF-8 encoding
 // of a character: https://en.wikipedia.org/wiki/UTF-8#Encoding
@@ -161,8 +156,7 @@ fn test_stdin_redirect_file_follow() {
         .set_stdin(File::open(at.plus("f")).unwrap())
         .run_no_wait();
 
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    p.make_assertion_with_delay(500).is_alive();
     p.kill()
         .make_assertion()
         .with_all_output()
@@ -301,11 +295,11 @@ fn test_follow_redirect_stdin_name_retry() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
     not(target_os = "freebsd"),
-    not(target_os = "openbsd"),
-    not(target_vendor = "apple")
+    not(target_os = "openbsd")
 ))] // FIXME: for currently not working platforms
 fn test_stdin_redirect_dir() {
     // $ mkdir dir
@@ -420,8 +414,7 @@ fn test_follow_stdin_descriptor() {
             .set_stdin(Stdio::piped())
             .args(&args)
             .run_no_wait();
-        p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-            .is_alive();
+        p.make_assertion_with_delay(500).is_alive();
         p.kill()
             .make_assertion()
             .with_all_output()
@@ -503,7 +496,7 @@ fn test_follow_single() {
     let expected_fixture = "foobar_single_default.expected";
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(200)
         .is_alive()
         .with_current_output()
         .stdout_only_fixture(expected_fixture);
@@ -513,7 +506,7 @@ fn test_follow_single() {
     at.append(FOOBAR_TXT, expected);
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
         .is_alive();
     child
         .kill()
@@ -531,7 +524,7 @@ fn test_follow_non_utf8_bytes() {
     let mut child = ucmd.arg("-f").arg(FOOBAR_TXT).run_no_wait();
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(500)
         .is_alive()
         .with_current_output()
         .stdout_only_fixture("foobar_single_default.expected");
@@ -548,7 +541,7 @@ fn test_follow_non_utf8_bytes() {
     at.append_bytes(FOOBAR_TXT, &expected);
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
         .with_current_output()
         .stdout_only_bytes(expected);
 
@@ -567,7 +560,7 @@ fn test_follow_multiple() {
         .run_no_wait();
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(500)
         .is_alive()
         .with_current_output()
         .stdout_only_fixture("foobar_follow_multiple.expected");
@@ -576,7 +569,7 @@ fn test_follow_multiple() {
     at.append(FOOBAR_2_TXT, first_append);
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
         .with_current_output()
         .stdout_only(first_append);
 
@@ -584,7 +577,7 @@ fn test_follow_multiple() {
     at.append(FOOBAR_TXT, second_append);
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
         .with_current_output()
         .stdout_only_fixture("foobar_follow_multiple_appended.expected");
 
@@ -605,7 +598,7 @@ fn test_follow_name_multiple() {
             .run_no_wait();
 
         child
-            .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+            .make_assertion_with_delay(500)
             .is_alive()
             .with_current_output()
             .stdout_only_fixture("foobar_follow_multiple.expected");
@@ -614,7 +607,7 @@ fn test_follow_name_multiple() {
         at.append(FOOBAR_2_TXT, first_append);
 
         child
-            .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+            .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
             .with_current_output()
             .stdout_only(first_append);
 
@@ -622,7 +615,7 @@ fn test_follow_name_multiple() {
         at.append(FOOBAR_TXT, second_append);
 
         child
-            .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+            .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
             .with_current_output()
             .stdout_only_fixture("foobar_follow_multiple_appended.expected");
 
@@ -699,6 +692,7 @@ fn test_follow_invalid_pid() {
 //        Fails intermittently in the CI, but couldn't reproduce the failure locally.
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
     not(target_os = "freebsd")
@@ -720,7 +714,7 @@ fn test_follow_with_pid() {
         .run_no_wait();
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(500)
         .is_alive()
         .with_current_output()
         .stdout_only_fixture("foobar_follow_multiple.expected");
@@ -729,7 +723,7 @@ fn test_follow_with_pid() {
     at.append(FOOBAR_2_TXT, first_append);
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
         .with_current_output()
         .stdout_only(first_append);
 
@@ -737,7 +731,7 @@ fn test_follow_with_pid() {
     at.append(FOOBAR_TXT, second_append);
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
         .is_alive()
         .with_current_output()
         .stdout_only_fixture("foobar_follow_multiple_appended.expected");
@@ -746,13 +740,13 @@ fn test_follow_with_pid() {
     kill(Pid::from_raw(i32::try_from(pid).unwrap()), Signal::SIGUSR1).unwrap();
     let _ = dummy.wait();
 
-    child.delay(DELAY_FOR_TAIL_NORMAL);
+    child.delay(DEFAULT_SLEEP_INTERVAL_MILLIS);
 
     let third_append = "should\nbe\nignored\n";
     at.append(FOOBAR_TXT, third_append);
 
     child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
+        .make_assertion_with_delay(DEFAULT_SLEEP_INTERVAL_MILLIS)
         .is_not_alive()
         .with_current_output()
         .no_stderr()
@@ -1254,12 +1248,12 @@ fn test_retry2() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue platforms have different event timing/ordering
+))] // FIXME: for currently not working platforms
 fn test_retry3() {
     // inspired by: gnu/tests/tail-2/retry.sh
     // Ensure that `tail --retry --follow=name` waits for the file to appear.
@@ -1269,7 +1263,7 @@ fn test_retry3() {
     let missing = "missing";
 
     let expected_stderr = "tail: cannot open 'missing' for reading: No such file or directory\n\
-tail: 'missing' has appeared;  following new file\n";
+        tail: 'missing' has appeared;  following new file\n";
     let expected_stdout = "X\n";
 
     let mut delay = 1500;
@@ -1299,12 +1293,12 @@ tail: 'missing' has appeared;  following new file\n";
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue platforms don't detect truncation in follow=descriptor mode
+))] // FIXME: for currently not working platforms
 fn test_retry4() {
     // inspired by: gnu/tests/tail-2/retry.sh
     // Ensure that `tail --retry --follow=descriptor` waits for the file to appear.
@@ -1314,16 +1308,10 @@ fn test_retry4() {
     let at = &ts.fixtures;
     let missing = "missing";
 
-    #[cfg(target_os = "linux")]
     let expected_stderr = "tail: warning: --retry only effective for the initial open\n\
-tail: cannot open 'missing' for reading: No such file or directory\n\
-tail: 'missing' has appeared;  following new file\n\
-tail: missing: file truncated\n";
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = "tail: warning: --retry only effective for the initial open\n\
-tail: cannot open 'missing' for reading: No such file or directory\n";
-
+        tail: cannot open 'missing' for reading: No such file or directory\n\
+        tail: 'missing' has appeared;  following new file\n\
+        tail: missing: file truncated\n";
     let expected_stdout = "X1\nX\n";
     let mut args = vec![
         "-s.1",
@@ -1363,12 +1351,12 @@ tail: cannot open 'missing' for reading: No such file or directory\n";
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue platforms don't generate untailable file message
+))] // FIXME: for currently not working platforms
 fn test_retry5() {
     // inspired by: gnu/tests/tail-2/retry.sh
     // Ensure that `tail --follow=descriptor --retry` exits when the file appears untailable.
@@ -1377,16 +1365,10 @@ fn test_retry5() {
     let at = &ts.fixtures;
     let missing = "missing";
 
-    #[cfg(target_os = "linux")]
     let expected_stderr = "tail: warning: --retry only effective for the initial open\n\
-tail: cannot open 'missing' for reading: No such file or directory\n\
-tail: 'missing' has been replaced with an untailable file; giving up on this name\n\
-tail: no files remaining\n";
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = "tail: warning: --retry only effective for the initial open\n\
-tail: cannot open 'missing' for reading: No such file or directory\n\
-tail: no files remaining\n";
+        tail: cannot open 'missing' for reading: No such file or directory\n\
+        tail: 'missing' has been replaced with an untailable file; giving up on this name\n\
+        tail: no files remaining\n";
 
     let mut delay = 1500;
     let mut args = vec!["--follow=descriptor", "--retry", missing, "--use-polling"];
@@ -1437,7 +1419,7 @@ fn test_retry6() {
         .arg("existing")
         .run_no_wait();
 
-    let delay = DELAY_FOR_TAIL_NORMAL;
+    let delay = 1000;
     p.make_assertion_with_delay(delay).is_alive();
 
     at.truncate(missing, "Y\n");
@@ -1456,12 +1438,12 @@ fn test_retry6() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue platforms have different event sequences for dir->file transitions
+))] // FIXME: for currently not working platforms
 fn test_retry7() {
     // inspired by: gnu/tests/tail-2/retry.sh
     // Ensure that `tail -F` retries when the file is initially untailable.
@@ -1470,19 +1452,12 @@ fn test_retry7() {
     let at = &ts.fixtures;
     let untailable = "untailable";
 
-    #[cfg(target_os = "linux")]
     let expected_stderr = "tail: error reading 'untailable': Is a directory\n\
-tail: untailable: cannot follow end of this type of file\n\
-tail: 'untailable' has become accessible\n\
-tail: 'untailable' has become inaccessible: No such file or directory\n\
-tail: 'untailable' has been replaced with an untailable file\n\
-tail: 'untailable' has become accessible\n";
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = "tail: error reading 'untailable': Is a directory\n\
-tail: untailable: cannot follow end of this type of file\n\
-tail: 'untailable' has become accessible\n";
-
+        tail: untailable: cannot follow end of this type of file\n\
+        tail: 'untailable' has become accessible\n\
+        tail: 'untailable' has become inaccessible: No such file or directory\n\
+        tail: 'untailable' has been replaced with an untailable file\n\
+        tail: 'untailable' has become accessible\n";
     let expected_stdout = "foo\nbar\n";
 
     let mut args = vec![
@@ -1538,12 +1513,12 @@ tail: 'untailable' has become accessible\n";
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue orphan handling differs from inotify
+))] // FIXME: for currently not working platforms
 fn test_retry8() {
     // Ensure that inotify will switch to polling mode if directory
     // of the watched file was initially missing and later created.
@@ -1559,21 +1534,14 @@ fn test_retry8() {
     let parent_dir = parent_dir.to_str().unwrap();
     let user_path = user_path.to_str().unwrap();
 
-    #[cfg(target_os = "linux")]
     let expected_stderr = "\
-tail: cannot open 'parent_dir/watched_file' for reading: No such file or directory\n\
-tail: 'parent_dir/watched_file' has appeared;  following new file\n\
-tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
-tail: 'parent_dir/watched_file' has appeared;  following new file\n";
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = "\
-tail: cannot open 'parent_dir/watched_file' for reading: No such file or directory\n\
-tail: 'parent_dir/watched_file' has appeared;  following new file\n";
-
+        tail: cannot open 'parent_dir/watched_file' for reading: No such file or directory\n\
+        tail: 'parent_dir/watched_file' has appeared;  following new file\n\
+        tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
+        tail: 'parent_dir/watched_file' has appeared;  following new file\n";
     let expected_stdout = "foo\nbar\n";
 
-    let delay = DELAY_FOR_TAIL_NORMAL;
+    let delay = 1000;
 
     let mut p = ts
         .ucmd()
@@ -1614,16 +1582,18 @@ tail: 'parent_dir/watched_file' has appeared;  following new file\n";
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "android"),
     not(target_os = "windows"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue parent dir removal handled differently
+))] // FIXME: for currently not working platforms
 fn test_retry9() {
     // inspired by: gnu/tests/tail-2/inotify-dir-recreate.sh
     // Ensure that inotify will switch to polling mode if directory
     // of the watched file was removed and recreated.
+
+    use text::BACKEND;
 
     let ts = TestScenario::new(util_name!());
     let at = &ts.fixtures;
@@ -1633,26 +1603,20 @@ fn test_retry9() {
     let parent_dir = parent_dir.to_str().unwrap();
     let user_path = user_path.to_str().unwrap();
 
-    #[cfg(target_os = "linux")]
     let expected_stderr = format!(
         "\
-tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
-tail: directory containing watched file was removed\n\
-tail: {} cannot be used, reverting to polling\n\
-tail: 'parent_dir/watched_file' has appeared;  following new file\n\
-tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
-tail: 'parent_dir/watched_file' has appeared;  following new file\n\
-tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
-tail: 'parent_dir/watched_file' has appeared;  following new file\n",
-        text::BACKEND
+            tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
+            tail: directory containing watched file was removed\n\
+            tail: {BACKEND} cannot be used, reverting to polling\n\
+            tail: 'parent_dir/watched_file' has appeared;  following new file\n\
+            tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
+            tail: 'parent_dir/watched_file' has appeared;  following new file\n\
+            tail: 'parent_dir/watched_file' has become inaccessible: No such file or directory\n\
+            tail: 'parent_dir/watched_file' has appeared;  following new file\n"
     );
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = String::new(); // macOS kqueue: parent watching handles this seamlessly
-
     let expected_stdout = "foo\nbar\nfoo\nbar\n";
 
-    let delay = DELAY_FOR_TAIL_NORMAL;
+    let delay = 1000;
 
     at.mkdir(parent_dir);
     at.truncate(user_path, "foo\n");
@@ -1700,12 +1664,12 @@ tail: 'parent_dir/watched_file' has appeared;  following new file\n",
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "android"),
     not(target_os = "windows"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue doesn't track file descriptor renames the same way
+))] // FIXME: for currently not working platforms
 fn test_follow_descriptor_vs_rename1() {
     // inspired by: gnu/tests/tail-2/descriptor-vs-rename.sh
     // $ ((rm -f A && touch A && sleep 1 && echo -n "A\n" >> A && sleep 1 && \
@@ -1764,12 +1728,12 @@ fn test_follow_descriptor_vs_rename1() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "android"),
     not(target_os = "windows"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue header tracking differs from inotify
+))] // FIXME: for currently not working platforms
 fn test_follow_descriptor_vs_rename2() {
     // Ensure the headers are correct for --verbose.
     // NOTE: GNU's tail does not update the header from FILE_A to FILE_C after `mv FILE_A FILE_C`
@@ -1817,12 +1781,12 @@ fn test_follow_descriptor_vs_rename2() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue event ordering differs for file appearance
+))] // FIXME: for currently not working platforms
 fn test_follow_name_retry_headers() {
     // inspired by: "gnu/tests/tail-2/F-headers.sh"
     // Ensure tail -F distinguishes output with the
@@ -1855,33 +1819,8 @@ fn test_follow_name_retry_headers() {
         "---disable-inotify",
     ];
 
-    // Linux: both iterations print all messages
-    // macOS: first iteration (polling) prints all, second (kqueue) only prints "has appeared"
-    #[cfg(target_os = "linux")]
-    let expected_stderr_list = [
-        "tail: cannot open 'a' for reading: No such file or directory\n\
-tail: cannot open 'b' for reading: No such file or directory\n\
-tail: 'a' has appeared;  following new file\n\
-tail: 'b' has appeared;  following new file\n",
-        "tail: cannot open 'a' for reading: No such file or directory\n\
-tail: cannot open 'b' for reading: No such file or directory\n\
-tail: 'a' has appeared;  following new file\n\
-tail: 'b' has appeared;  following new file\n",
-    ];
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr_list = [
-        // macOS with -F doesn't print "cannot open" messages
-        "tail: 'a' has appeared;  following new file\n\
-tail: 'b' has appeared;  following new file\n",
-        "tail: 'a' has appeared;  following new file\n\
-tail: 'b' has appeared;  following new file\n",
-    ];
-
-    let expected_stdout = "\n==> a <==\nx\n\n==> b <==\ny\n";
-
     let mut delay = 1500;
-    for expected_stderr in &expected_stderr_list {
+    for _ in 0..2 {
         let mut p = ts.ucmd().args(&args).run_no_wait();
 
         p.make_assertion_with_delay(delay).is_alive();
@@ -1892,12 +1831,18 @@ tail: 'b' has appeared;  following new file\n",
         at.truncate(file_b, "y\n");
         p.delay(delay);
 
+        let expected_stderr = "tail: cannot open 'a' for reading: No such file or directory\n\
+                tail: cannot open 'b' for reading: No such file or directory\n\
+                tail: 'a' has appeared;  following new file\n\
+                tail: 'b' has appeared;  following new file\n";
+        let expected_stdout = "\n==> a <==\nx\n\n==> b <==\ny\n";
+
         p.make_assertion().is_alive();
         p.kill()
             .make_assertion()
             .with_all_output()
-            .stderr_is(expected_stderr)
-            .stdout_is(expected_stdout);
+            .stdout_is(expected_stdout)
+            .stderr_is(expected_stderr);
 
         at.remove(file_a);
         at.remove(file_b);
@@ -1920,27 +1865,11 @@ fn test_follow_name_remove() {
     at.copy(source, source_copy);
 
     let expected_stdout = at.read(FOLLOW_NAME_SHORT_EXP);
-
-    #[cfg(target_os = "linux")]
     let expected_stderr = [
         format!(
             "{}: {source_copy}: No such file or directory\n{0}: no files remaining\n",
             ts.util_name,
         ),
-        format!(
-            "{}: {source_copy}: No such file or directory\n",
-            ts.util_name,
-        ),
-    ];
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = [
-        // First iteration (--use-polling): exits with "no files remaining"
-        format!(
-            "{}: {source_copy}: No such file or directory\n{0}: no files remaining\n",
-            ts.util_name,
-        ),
-        // Second iteration (kqueue): stays alive, no "no files remaining" message
         format!(
             "{}: {source_copy}: No such file or directory\n",
             ts.util_name,
@@ -1986,10 +1915,8 @@ fn test_follow_name_remove() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
-    not(target_os = "freebsd"),
-    not(target_os = "openbsd")
-))] // FIXME: kqueue truncation detection differs
+    not(target_os = "freebsd")
+))] // FIXME: for currently not working platforms
 fn test_follow_name_truncate1() {
     // This test triggers a truncate event while `tail --follow=name file` is running.
     // $ cp file backup && head file > file && sleep 1 && cp backup file
@@ -2001,20 +1928,11 @@ fn test_follow_name_truncate1() {
     let backup = "backup";
 
     let expected_stdout = at.read(FOLLOW_NAME_EXP);
-
-    #[cfg(target_os = "linux")]
     let expected_stderr = format!("{}: {source}: file truncated\n", ts.util_name);
 
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = String::new(); // macOS may not print truncation message
-
     let args = ["--follow=name", source];
-
-    // Copy fixture before starting tail
-    at.copy(source, source);
-
     let mut p = ts.ucmd().args(&args).run_no_wait();
-    let delay = DELAY_FOR_TAIL_NORMAL;
+    let delay = 1000;
     p.make_assertion().is_alive();
 
     at.copy(source, backup);
@@ -2030,7 +1948,7 @@ fn test_follow_name_truncate1() {
     p.kill()
         .make_assertion()
         .with_all_output()
-        .stderr_contains(&expected_stderr)
+        .stderr_is(expected_stderr)
         .stdout_is(expected_stdout);
 }
 
@@ -2038,10 +1956,8 @@ fn test_follow_name_truncate1() {
 #[cfg(all(
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
-    not(target_os = "freebsd"),
-    not(target_os = "openbsd")
-))] // FIXME: kqueue truncation detection differs
+    not(target_os = "freebsd")
+))] // FIXME: for currently not working platforms
 fn test_follow_name_truncate2() {
     // This test triggers a truncate event while `tail --follow=name file` is running.
     // $ ((sleep 1 && echo -n "x\nx\nx\n" >> file && sleep 1 && \
@@ -2054,12 +1970,7 @@ fn test_follow_name_truncate2() {
     at.touch(source);
 
     let expected_stdout = "x\nx\nx\nx\n";
-
-    #[cfg(target_os = "linux")]
     let expected_stderr = format!("{}: {source}: file truncated\n", ts.util_name);
-
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = String::new(); // macOS may not print truncation message
 
     let args = ["--follow=name", source];
     let mut p = ts.ucmd().args(&args).run_no_wait();
@@ -2122,6 +2033,7 @@ fn test_follow_name_truncate3() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(feature = "feat_selinux") // flaky
 ))] // FIXME: for currently not working platforms
@@ -2133,7 +2045,7 @@ fn test_follow_name_truncate4() {
 
     let mut args = vec!["-s.1", "--max-unchanged-stats=1", "-F", "file"];
 
-    let mut delay = DELAY_FOR_TAIL_NORMAL;
+    let mut delay = 500;
     for i in 0..2 {
         at.append("file", "foobar\n");
 
@@ -2208,12 +2120,12 @@ fn test_follow_truncate_fast() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: test harness has issues capturing output from background processes on macOS/BSD
+))] // FIXME: for currently not working platforms
 fn test_follow_name_move_create1() {
     // This test triggers a move/create event while `tail --follow=name file` is running.
     // ((sleep 2 && mv file backup && sleep 2 && cp backup file &)>/dev/null 2>&1 &) ; tail --follow=name file
@@ -2233,11 +2145,16 @@ fn test_follow_name_move_create1() {
         ts.util_name,
     );
 
-    let delay = DELAY_FOR_TAIL_NORMAL;
-    let args = ["--follow=name", source];
+    // NOTE: We are less strict if not on Linux (inotify backend).
 
-    // Copy fixture file to temp directory before starting tail
-    at.copy(source, source);
+    #[cfg(not(target_os = "linux"))]
+    let expected_stdout = at.read(FOLLOW_NAME_SHORT_EXP);
+
+    #[cfg(not(target_os = "linux"))]
+    let expected_stderr = format!("{}: {source}: No such file or directory\n", ts.util_name);
+
+    let delay = 500;
+    let args = ["--follow=name", source];
 
     let mut p = ts.ucmd().args(&args).run_no_wait();
 
@@ -2253,18 +2170,18 @@ fn test_follow_name_move_create1() {
     p.kill()
         .make_assertion()
         .with_all_output()
-        .stderr_contains(&expected_stderr)
+        .stderr_is(expected_stderr)
         .stdout_is(expected_stdout);
 }
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "android"),
     not(target_os = "windows"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: test harness has issues capturing output from background processes on macOS/BSD
+))] // FIXME: for currently not working platforms
 fn test_follow_name_move_create2() {
     // inspired by: "gnu/tests/tail-2/inotify-hash-abuse.sh"
     // Exercise an abort-inducing flaw in inotify-enabled tail -F
@@ -2292,7 +2209,7 @@ fn test_follow_name_move_create2() {
         "9",
     ];
 
-    let mut delay = DELAY_FOR_TAIL_NORMAL;
+    let mut delay = 500;
     for i in 0..2 {
         let mut p = ts.ucmd().args(&args).run_no_wait();
 
@@ -2319,13 +2236,8 @@ fn test_follow_name_move_create2() {
         } else {
             "x\na\n"
         };
-
-        #[cfg(target_os = "linux")]
         let expected_stderr = "tail: '1' has become inaccessible: No such file or directory\n\
                 tail: '1' has appeared;  following new file\n";
-
-        #[cfg(not(target_os = "linux"))]
-        let expected_stderr = ""; // macOS kqueue with parent watching: seamless, no messages
 
         p.make_assertion().is_alive();
         p.kill()
@@ -2344,12 +2256,12 @@ fn test_follow_name_move_create2() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: test harness has issues capturing output from background processes on macOS/BSD
+))] // FIXME: for currently not working platforms
 fn test_follow_name_move1() {
     // This test triggers a move event while `tail --follow=name file` is running.
     // ((sleep 2 && mv file backup &)>/dev/null 2>&1 &) ; tail --follow=name file
@@ -2362,9 +2274,6 @@ fn test_follow_name_move1() {
     let backup = "backup";
 
     let expected_stdout = at.read(FOLLOW_NAME_SHORT_EXP);
-
-    // On macOS/BSD with kqueue, no error is printed with parent watching
-    #[cfg(target_os = "linux")]
     let expected_stderr = [
         format!("{}: {source}: No such file or directory\n", ts.util_name),
         format!(
@@ -2373,23 +2282,11 @@ fn test_follow_name_move1() {
         ),
     ];
 
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = [
-        String::new(), // kqueue with parent watching: no error on first iteration
-        format!(
-            "{}: {source}: No such file or directory\n{0}: no files remaining\n",
-            ts.util_name
-        ), // polling exits with error
-    ];
-
     let mut args = vec!["--follow=name", source];
 
-    let mut delay = DELAY_FOR_TAIL_NORMAL;
+    let mut delay = 500;
     #[allow(clippy::needless_range_loop)]
     for i in 0..2 {
-        // Copy fixture for each iteration (first run and after restoration)
-        at.copy(source, source);
-
         let mut p = ts.ucmd().args(&args).run_no_wait();
 
         p.make_assertion_with_delay(delay).is_alive();
@@ -2402,13 +2299,13 @@ fn test_follow_name_move1() {
             p.kill()
                 .make_assertion()
                 .with_all_output()
-                .stderr_contains(&expected_stderr[i])
+                .stderr_is(&expected_stderr[i])
                 .stdout_is(&expected_stdout);
         } else {
             p.make_assertion()
                 .is_not_alive()
                 .with_all_output()
-                .stderr_contains(&expected_stderr[i])
+                .stderr_is(&expected_stderr[i])
                 .stdout_is(&expected_stdout)
                 .failure();
         }
@@ -2421,12 +2318,12 @@ fn test_follow_name_move1() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue handles file replacement differently
+))] // FIXME: for currently not working platforms
 fn test_follow_name_move2() {
     // Like test_follow_name_move1, but move to a name that's already monitored.
 
@@ -2458,8 +2355,6 @@ fn test_follow_name_move2() {
         "==> {file1} <==\n{file1}_content\n\n==> {file2} <==\n{file2}_content\n{file1}_content\n\
             more_{file2}_content\n\n==> {file1} <==\nmore_{file1}_content\n"
     );
-
-    #[cfg(target_os = "linux")]
     let mut expected_stderr = format!(
         "{0}: {1}: No such file or directory\n\
             {0}: '{2}' has been replaced;  following new file\n\
@@ -2467,12 +2362,9 @@ fn test_follow_name_move2() {
         ts.util_name, file1, file2
     );
 
-    #[cfg(not(target_os = "linux"))]
-    let expected_stderr = String::new(); // macOS kqueue: seamless tracking
-
     let mut args = vec!["--follow=name", file1, file2];
 
-    let mut delay = DELAY_FOR_TAIL_NORMAL;
+    let mut delay = 500;
     for i in 0..2 {
         at.truncate(file1, "file1_content\n");
         at.truncate(file2, "file2_content\n");
@@ -2503,27 +2395,23 @@ fn test_follow_name_move2() {
         // NOTE: Switch the first and second line because the events come in this order from
         //  `notify::PollWatcher`. However, for GNU's tail, the order between polling and not
         //  polling does not change.
-        #[cfg(target_os = "linux")]
-        {
-            expected_stderr = format!(
-                "{0}: '{2}' has been replaced;  following new file\n\
-                    {0}: {1}: No such file or directory\n\
-                    {0}: '{1}' has appeared;  following new file\n",
-                ts.util_name, file1, file2
-            );
-        }
-        // macOS kqueue: no change, stays empty
+        expected_stderr = format!(
+            "{0}: '{2}' has been replaced;  following new file\n\
+                {0}: {1}: No such file or directory\n\
+                {0}: '{1}' has appeared;  following new file\n",
+            ts.util_name, file1, file2
+        );
     }
 }
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue retry rename handling differs
+))] // FIXME: for currently not working platforms
 fn test_follow_name_move_retry1() {
     // Similar to test_follow_name_move1 but with `--retry` (`-F`)
     // This test triggers two move/rename events while `tail --follow=name --retry file` is running.
@@ -2534,13 +2422,11 @@ fn test_follow_name_move_retry1() {
     let source = FOLLOW_NAME_TXT;
     let backup = "backup";
 
-    // Both platforms print these messages with --retry (-F)
     let expected_stderr = format!(
         "{0}: '{1}' has become inaccessible: No such file or directory\n\
-{0}: '{1}' has appeared;  following new file\n",
+            {0}: '{1}' has appeared;  following new file\n",
         ts.util_name, source
     );
-
     let expected_stdout = "tailed\nnew content\n";
 
     let mut args = vec!["--follow=name", "--retry", source, "--use-polling"];
@@ -2580,12 +2466,12 @@ fn test_follow_name_move_retry1() {
 
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "android"),
-    not(target_os = "macos"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd")
-))] // FIXME: kqueue event timing for multiple file renames differs
+))] // FIXME: for currently not working platforms
 fn test_follow_name_move_retry2() {
     // inspired by: "gnu/tests/tail-2/F-vs-rename.sh"
     // Similar to test_follow_name_move2 (move to a name that's already monitored)
@@ -2627,18 +2513,16 @@ fn test_follow_name_move_retry2() {
         "==> {file1} <==\n\n==> {file2} <==\n\n==> {file1} <==\nx\n\n==> {file2} <==\
             \nx\n\n==> {file1} <==\nx2\n\n==> {file2} <==\ny\n\n==> {file1} <==\nz\n"
     );
-
-    // Both platforms print these messages with -F (--retry)
     let mut expected_stderr = format!(
         "{0}: '{1}' has become inaccessible: No such file or directory\n\
-{0}: '{2}' has been replaced;  following new file\n\
-{0}: '{1}' has appeared;  following new file\n",
+            {0}: '{2}' has been replaced;  following new file\n\
+            {0}: '{1}' has appeared;  following new file\n",
         ts.util_name, file1, file2
     );
 
     let mut args = vec!["-s.1", "--max-unchanged-stats=1", "-F", file1, file2];
 
-    let mut delay = DELAY_FOR_TAIL_NORMAL;
+    let mut delay = 500;
     for i in 0..2 {
         at.touch(file1);
         at.touch(file2);
@@ -2679,8 +2563,8 @@ fn test_follow_name_move_retry2() {
         //  polling does not change.
         expected_stderr = format!(
             "{0}: '{2}' has been replaced;  following new file\n\
-{0}: '{1}' has become inaccessible: No such file or directory\n\
-{0}: '{1}' has appeared;  following new file\n",
+                {0}: '{1}' has become inaccessible: No such file or directory\n\
+                {0}: '{1}' has appeared;  following new file\n",
             ts.util_name, file1, file2
         );
     }
@@ -2697,7 +2581,7 @@ fn test_follow_inotify_only_regular() {
 
     let mut p = ts.ucmd().arg("-f").arg("/dev/null").run_no_wait();
 
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_FAST).is_alive();
+    p.make_assertion_with_delay(200).is_alive();
     p.kill()
         .make_assertion()
         .with_all_output()
@@ -2751,8 +2635,7 @@ fn test_fifo() {
     at.mkfifo("FIFO");
 
     let mut p = ts.ucmd().arg("FIFO").run_no_wait();
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    p.make_assertion_with_delay(500).is_alive();
     p.kill()
         .make_assertion()
         .with_all_output()
@@ -2761,8 +2644,7 @@ fn test_fifo() {
 
     for arg in ["-f", "-F"] {
         let mut p = ts.ucmd().arg(arg).arg("FIFO").run_no_wait();
-        p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-            .is_alive();
+        p.make_assertion_with_delay(500).is_alive();
         p.kill()
             .make_assertion()
             .with_all_output()
@@ -2785,11 +2667,10 @@ fn test_illegal_seek() {
     at.mkfifo("FIFO");
 
     let mut p = ts.ucmd().arg("FILE").run_no_wait();
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    p.make_assertion_with_delay(500).is_alive();
 
     at.rename("FILE", "FIFO");
-    p.delay(DELAY_FOR_TAIL_NORMAL);
+    p.delay(500);
 
     p.make_assertion().is_alive();
     let expected_stderr = "tail: 'FILE' has been replaced;  following new file\n\
@@ -4034,7 +3915,7 @@ fn test_args_when_settings_check_warnings_then_shows_warnings() {
         .run_no_wait();
 
     child
-        .delay(DELAY_FOR_TAIL_NORMAL)
+        .delay(500)
         .kill()
         .make_assertion()
         .with_current_output()
@@ -4095,9 +3976,7 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .set_stdin(File::open(text::DEV_PTMX).unwrap())
         .run_no_wait();
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4117,9 +3996,7 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4140,9 +4017,7 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4159,9 +4034,7 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4178,9 +4051,7 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4197,9 +4068,7 @@ fn test_args_when_settings_check_warnings_follow_indefinitely_then_warning() {
         .stderr_to_stdout()
         .run_no_wait();
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4323,7 +4192,7 @@ fn test_follow_when_files_are_pointing_to_same_relative_file_and_data_is_appende
         .run_no_wait();
 
     let more_data = "more data";
-    child.delay(DELAY_FOR_TAIL_NORMAL);
+    child.delay(500);
 
     at.append(relative_path_name, more_data);
 
@@ -4360,7 +4229,7 @@ fn test_follow_when_files_are_pointing_to_same_relative_file_and_data_is_appende
         ])
         .run_no_wait();
 
-    child.delay(DELAY_FOR_TAIL_NORMAL);
+    child.delay(500);
     let more_data = "more data";
     at.append(relative_path_name, more_data);
 
@@ -4412,7 +4281,7 @@ fn test_follow_when_files_are_pointing_to_same_relative_file_and_file_is_truncat
         .stderr_to_stdout()
         .run_no_wait();
 
-    child.delay(DELAY_FOR_TAIL_NORMAL);
+    child.delay(500);
     let less_data = "less";
     at.write(relative_path_name, "less");
 
@@ -4431,9 +4300,7 @@ fn test_follow_when_files_are_pointing_to_same_relative_file_and_file_is_truncat
         scene.util_name                  // 4
     );
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4467,7 +4334,7 @@ fn test_follow_when_file_and_symlink_are_pointing_to_same_file_and_append_data()
         ])
         .run_no_wait();
 
-    child.delay(DELAY_FOR_TAIL_NORMAL);
+    child.delay(500);
     let more_data = "more data";
     at.append(path_name, more_data);
 
@@ -4482,9 +4349,7 @@ fn test_follow_when_file_and_symlink_are_pointing_to_same_file_and_append_data()
         {more_data}"
     );
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4503,7 +4368,7 @@ fn test_follow_when_file_and_symlink_are_pointing_to_same_file_and_append_data()
         ])
         .run_no_wait();
 
-    child.delay(DELAY_FOR_TAIL_NORMAL);
+    child.delay(500);
     let more_data = "more data";
     at.append(path_name, more_data);
 
@@ -4518,9 +4383,7 @@ fn test_follow_when_file_and_symlink_are_pointing_to_same_file_and_append_data()
         {more_data}"
     );
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4541,9 +4404,7 @@ fn test_args_when_directory_given_shorthand_big_f_together_with_retry() {
     );
     let mut child = scene.ucmd().args(&["-F", "--retry", "dir"]).run_no_wait();
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4552,9 +4413,7 @@ fn test_args_when_directory_given_shorthand_big_f_together_with_retry() {
 
     let mut child = scene.ucmd().args(&["--retry", "-F", "dir"]).run_no_wait();
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4587,6 +4446,7 @@ fn test_args_when_directory_given_shorthand_big_f_together_with_retry() {
 // <
 #[test]
 #[cfg(all(
+    not(target_vendor = "apple"),
     not(target_os = "windows"),
     not(target_os = "freebsd"),
     not(target_os = "openbsd"),
@@ -4613,7 +4473,7 @@ fn test_follow_when_files_are_pointing_to_same_relative_file_and_file_stays_same
         ])
         .run_no_wait();
 
-    child.delay(DELAY_FOR_TAIL_NORMAL);
+    child.delay(500);
     let same_data = "same data"; // equal size to file_data
     at.write(relative_path_name, same_data);
 
@@ -4627,9 +4487,7 @@ fn test_follow_when_files_are_pointing_to_same_relative_file_and_file_stays_same
         absolute_path.to_str().unwrap(), // 2
     );
 
-    child
-        .make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    child.make_assertion_with_delay(500).is_alive();
     child
         .kill()
         .make_assertion()
@@ -4908,8 +4766,7 @@ fn test_gnu_args_f() {
     let source = "file";
     at.touch(source);
     let mut p = scene.ucmd().args(&["+f", source]).run_no_wait();
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    p.make_assertion_with_delay(500).is_alive();
     p.kill()
         .make_assertion()
         .with_all_output()
@@ -4921,8 +4778,7 @@ fn test_gnu_args_f() {
         .set_stdin(Stdio::piped())
         .arg("+f")
         .run_no_wait();
-    p.make_assertion_with_delay(DELAY_FOR_TAIL_NORMAL)
-        .is_alive();
+    p.make_assertion_with_delay(500).is_alive();
     p.kill()
         .make_assertion()
         .with_all_output()

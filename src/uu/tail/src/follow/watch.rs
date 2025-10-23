@@ -6,7 +6,7 @@
 // spell-checker:ignore (ToDO) tailable untailable stdlib kqueue Uncategorized unwatch
 
 use crate::args::{FollowMode, Settings};
-use crate::follow::files::{BufReadSeek, FileHandling, PathData};
+use crate::follow::files::{BufReadSeek, FileHandling, PathData, WatchSource};
 use crate::paths::{Input, InputKind, MetadataExtTail, PathExtTail};
 use crate::{platform, text};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher, WatcherKind};
@@ -31,22 +31,66 @@ impl WatcherRx {
         Self { watcher, receiver }
     }
 
+    /// Resolve an event to the actual monitored file path(s) and their watch sources.
+    /// This handles mapping parent directory events to the files they affect.
+    fn resolve_event_paths(
+        &self,
+        event: &notify::Event,
+        files: &FileHandling,
+        _follow_mode: Option<FollowMode>,
+    ) -> Vec<(PathBuf, WatchSource)> {
+        let event_path = event.paths.first().unwrap();
+        let mut resolved = Vec::new();
+
+        // Check if event_path is directly monitored (direct file event)
+        if files.contains_key(event_path) {
+            resolved.push((event_path.clone(), WatchSource::File));
+            return resolved;
+        }
+
+        // For parent directory events, find affected monitored files
+        // This only applies when parent watching is enabled (Linux + inotify)
+        if cfg!(target_os = "linux") {
+            for monitored_path in files.keys() {
+                if let Some(parent) = monitored_path.parent() {
+                    if parent == event_path {
+                        // Event from parent directory affecting this monitored file
+                        resolved.push((monitored_path.clone(), WatchSource::ParentDirectory));
+                    }
+                }
+            }
+        }
+
+        resolved
+    }
+
     /// Wrapper for `notify::Watcher::watch` to also add the parent directory of `path` if necessary.
-    /// When using polling OR --follow=descriptor, watch the file directly.
-    /// When using inotify with --follow=name, watch BOTH file and parent directory.
-    /// When using kqueue with --follow=name, watch BOTH file and parent directory for better tracking.
+    /// On Linux with inotify (not polling), we watch BOTH file and parent directory for ALL follow modes.
+    /// This is necessary because inotify loses track of a file after it's renamed if we only watch the file.
+    /// The notify crate documentation recommends watching the parent directory to handle renames reliably.
+    /// Event handling logic must filter and process events appropriately based on follow mode.
     /// NOTE: Tests for --follow=name are disabled on macOS/BSD due to test harness limitations
     /// with capturing output from background processes, but the functionality works correctly.
     fn watch_with_parent(
         &mut self,
         path: &Path,
         use_polling: bool,
-        follow_name: bool,
+        _follow_name: bool,
     ) -> UResult<()> {
         let mut path = path.to_owned();
-        
-        // For --follow=name mode, watch both file and parent directory on supported platforms
-        if path.is_file() && !use_polling && follow_name {
+
+        // For inotify/kqueue systems, always watch both file and parent directory for reliable operation.
+        // This prevents inotify/kqueue from losing track of files after rename operations.
+        // The event handling logic will filter and process events appropriately based on follow mode.
+        if path.is_file()
+            && !use_polling
+            && (cfg!(target_os = "linux")
+                || cfg!(target_vendor = "apple")
+                || cfg!(target_os = "freebsd")
+                || cfg!(target_os = "netbsd")
+                || cfg!(target_os = "openbsd")
+                || cfg!(target_os = "dragonfly"))
+        {
             /*
             NOTE: For --follow=name, we watch BOTH file and parent directory on supported platforms.
             This workaround follows the recommendation of the notify crate authors:
@@ -60,11 +104,11 @@ impl WatcherRx {
 
             This applies to:
             - Linux (inotify): Both file and parent directory
-            - macOS/BSD (kqueue): Both file and parent directory for better tracking
+            - macOS/BSD (kqueue): Both file and parent directory
             - Other platforms: File only (fallback behavior)
             */
             let file_path = path.clone();
-            
+
             // First, watch the file itself for modification events
             if file_path.is_relative() {
                 let canonical_file = file_path.canonicalize()?;
@@ -92,7 +136,7 @@ impl WatcherRx {
                 ));
             }
         }
-        
+
         if path.is_relative() {
             path = path.canonicalize()?;
         }
@@ -345,19 +389,38 @@ impl Observer {
     fn handle_event(
         &mut self,
         event: &notify::Event,
+        watch_source: WatchSource,
         settings: &Settings,
     ) -> UResult<Vec<PathBuf>> {
         use notify::event::*;
 
         let event_path = event.paths.first().unwrap();
+
+        // If this is a parent directory event (not a direct file event), return early.
+        // The follow() loop will map parent events to monitored files before calling handle_event.
+        if !self.files.contains_key(event_path) {
+            return Ok(vec![]);
+        }
+
+        // For descriptor mode, ignore parent directory events to avoid conflicts
+        if self.follow_descriptor() && watch_source == WatchSource::ParentDirectory {
+            return Ok(vec![]);
+        }
+
         let mut paths: Vec<PathBuf> = vec![];
+        // Safety: we confirmed this path exists in the map above
         let display_name = self.files.get(event_path).display_name.clone();
 
         match event.kind {
-            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any | MetadataKind::WriteTime) | ModifyKind::Data(DataChange::Any) | ModifyKind::Name(RenameMode::To)) |
-            EventKind::Create(CreateKind::File | CreateKind::Folder | CreateKind::Any) => {
+            EventKind::Modify(
+                ModifyKind::Metadata(MetadataKind::Any | MetadataKind::WriteTime)
+                | ModifyKind::Data(DataChange::Any)
+                | ModifyKind::Name(RenameMode::To),
+            )
+            | EventKind::Create(CreateKind::File | CreateKind::Folder | CreateKind::Any) => {
                 if let Ok(new_md) = event_path.metadata() {
                     let is_tailable = new_md.is_tailable();
+                    // Safety: we confirmed this path exists in the map above
                     let pd = self.files.get(event_path);
                     if let Some(old_md) = &pd.metadata {
                         if is_tailable {
@@ -376,8 +439,10 @@ impl Observer {
                                     translate!("tail-status-has-appeared-following-new-file", "file" => display_name.quote())
                                 );
                                 self.files.update_reader(event_path)?;
-                            } else if event.kind == EventKind::Modify(ModifyKind::Name(RenameMode::To))
-                            || !old_md.file_id_eq(&new_md) {
+                            } else if event.kind
+                                == EventKind::Modify(ModifyKind::Name(RenameMode::To))
+                                || !old_md.file_id_eq(&new_md)
+                            {
                                 // File was replaced (different inode) - only show message on Linux or with polling
                                 if cfg!(target_os = "linux") || self.use_polling {
                                     show_error!(
@@ -427,10 +492,19 @@ impl Observer {
                                 "{}",
                                 translate!("tail-status-replaced-with-untailable-file-giving-up", "file" => display_name.quote())
                             );
-                            let _ = self.watcher_rx.as_mut().unwrap().watcher.unwatch(event_path);
+                            let _ = self
+                                .watcher_rx
+                                .as_mut()
+                                .unwrap()
+                                .watcher
+                                .unwatch(event_path);
+                            // Safety: we confirmed this path exists in the map above
                             self.files.remove(event_path);
                             if self.files.no_files_remaining(settings) {
-                                return Err(USimpleError::new(1, translate!("tail-no-files-remaining")));
+                                return Err(USimpleError::new(
+                                    1,
+                                    translate!("tail-no-files-remaining"),
+                                ));
                             }
                         } else {
                             show_error!(
@@ -443,12 +517,28 @@ impl Observer {
                 }
             }
             EventKind::Remove(RemoveKind::File | RemoveKind::Any)
-
-                // | EventKind::Modify(ModifyKind::Name(RenameMode::Any))
-                | EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
-                if self.follow_name() {
+            | EventKind::Modify(ModifyKind::Name(RenameMode::Any))
+            | EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
+                // In descriptor mode with inotify, handle rename events specially
+                if self.follow_descriptor()
+                    && !self.use_polling
+                    && watch_source == WatchSource::File
+                {
+                    // File was renamed or watch was invalidated
+                    // Switch to polling fallback since inotify watch is now invalid
+                    self.files.get_mut(event_path).fallback_to_polling = true;
+                    let _ = self
+                        .watcher_rx
+                        .as_mut()
+                        .unwrap()
+                        .watcher
+                        .unwatch(event_path);
+                    // Don't remove from files map - FD is still valid
+                } else if self.follow_name() {
                     if settings.retry {
+                        // Safety: we confirmed this path exists in the map above
                         if let Some(old_md) = self.files.get_mut_metadata(event_path) {
+                            // Safety: we confirmed this path exists in the map above
                             if old_md.is_tailable() && self.files.get(event_path).reader.is_some() {
                                 show_error!(
                                     "{}",
@@ -457,7 +547,10 @@ impl Observer {
                             }
                         }
                         if event_path.is_orphan() && !self.orphans.contains(event_path) {
-                            show_error!("{}", translate!("tail-status-directory-containing-watched-file-removed"));
+                            show_error!(
+                                "{}",
+                                translate!("tail-status-directory-containing-watched-file-removed")
+                            );
                             show_error!(
                                 "{}",
                                 translate!("tail-status-backend-cannot-be-used-reverting-to-polling", "backend" => text::BACKEND)
@@ -472,13 +565,17 @@ impl Observer {
                         );
                         if !self.files.files_remaining() && self.use_polling {
                             // NOTE: GNU's tail exits here for `---disable-inotify`
-                            return Err(USimpleError::new(1, translate!("tail-no-files-remaining")));
+                            return Err(USimpleError::new(
+                                1,
+                                translate!("tail-no-files-remaining"),
+                            ));
                         }
                     }
                     self.files.reset_reader(event_path);
                 } else if self.follow_descriptor_retry() {
                     // --retry only effective for the initial open
                     let _ = self.watcher_rx.as_mut().unwrap().unwatch(event_path);
+                    // Safety: we confirmed this path exists in the map above
                     self.files.remove(event_path);
                 } else if self.use_polling && event.kind == EventKind::Remove(RemoveKind::Any) {
                     /*
@@ -497,10 +594,16 @@ impl Observer {
                 /*
                 NOTE: For `tail -f a`, keep tracking additions to b after `mv a b`
                 (gnu/tests/tail-2/descriptor-vs-rename.sh)
-                NOTE: The File/BufReader doesn't need to be updated.
-                However, we need to update our `files.map`.
-                This can only be done for inotify, because this EventKind does not
-                trigger for the PollWatcher.
+                NOTE: The File/BufReader doesn't need to be updated because we're following
+                the file descriptor, which remains valid after a rename.
+
+                For --follow=descriptor mode with direct file watching (not parent directory),
+                inotify only provides the old path in the event, not the new path.
+                Since we're following the descriptor anyway, we don't need to update the HashMap key.
+                We just continue using the original path as the key and the file descriptor stays valid.
+
+                For --follow=name mode or parent directory watching, this would need different handling.
+
                 BUG: As a result, there's a bug if polling is used:
                 $ tail -f file_a ---disable-inotify
                 $ mv file_a file_b
@@ -511,25 +614,53 @@ impl Observer {
                 TODO: [2022-05; jhscheer] add test for this bug
                 */
 
-                if self.follow_descriptor() {
-                    let new_path = event.paths.last().unwrap();
-                    paths.push(new_path.clone());
-
-                    let new_data = PathData::from_other_with_path(self.files.remove(event_path), new_path);
-                    self.files.insert(
-                        new_path,
-                        new_data,
-                        self.files.get_last().unwrap() == event_path
-                    );
-
-                    // Unwatch old path and watch new path
-                    let use_polling = self.use_polling;
-                    let follow_name = self.follow_name();
-                    let _ = self.watcher_rx.as_mut().unwrap().unwatch(event_path);
-                    self.watcher_rx.as_mut().unwrap().watch_with_parent(new_path, use_polling, follow_name)?;
+                if self.follow_descriptor() && watch_source == WatchSource::File {
+                    // For descriptor mode with direct file watching, we don't need to update
+                    // the HashMap because:
+                    // 1. The file descriptor remains valid after rename
+                    // 2. The inotify event only contains the old path, not the new path
+                    // 3. We're following the descriptor, not the name
+                    //
+                    // However, after rename the inotify watch becomes invalid (path-based).
+                    // Switch to periodic FD polling to catch new writes.
+                    if !self.use_polling {
+                        // Mark for polling fallback
+                        self.files.get_mut(event_path).fallback_to_polling = true;
+                        // Optional: unwatch the path since it's no longer valid
+                        let _ = self
+                            .watcher_rx
+                            .as_mut()
+                            .unwrap()
+                            .watcher
+                            .unwatch(event_path);
+                    }
+                    // Just add the path to the list for reading new content.
+                    paths.push(event_path.clone());
                 }
             }
-            _ => {}
+            _ => {
+                // Catch-all for any other events - handle descriptor mode fallback
+                if self.follow_descriptor()
+                    && !self.use_polling
+                    && watch_source == WatchSource::File
+                {
+                    // For ANY unexpected events in descriptor mode with inotify that might indicate
+                    // the file was modified or renamed, switch to polling fallback as a safety measure.
+                    // This ensures we never miss data due to unexpected event types.
+                    // We check if the file path still exists - if it doesn't, it was likely renamed/moved.
+                    if !event_path.exists() {
+                        self.files.get_mut(event_path).fallback_to_polling = true;
+                        let _ = self
+                            .watcher_rx
+                            .as_mut()
+                            .unwrap()
+                            .watcher
+                            .unwatch(event_path);
+                        // Add path to reading list to try reading any remaining data from FD
+                        paths.push(event_path.clone());
+                    }
+                }
+            }
         }
         Ok(paths)
     }
@@ -537,6 +668,8 @@ impl Observer {
 
 #[allow(clippy::cognitive_complexity)]
 pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
+    // Debug: Log that follow function was called
+
     if observer.files.no_files_remaining(settings) && !observer.files.only_stdin_remaining() {
         return Err(USimpleError::new(1, translate!("tail-no-files-remaining")));
     }
@@ -577,7 +710,8 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
         // here paths will not be removed from orphans if the path becomes available.
         if observer.follow_name_retry() {
             for new_path in &observer.orphans {
-                if new_path.exists() {
+                if new_path.exists() && observer.files.contains_key(new_path) {
+                    // Safety: we just confirmed this path exists in the map above
                     let pd = observer.files.get(new_path);
                     let md = new_path.metadata().unwrap();
                     if md.is_tailable() && pd.reader.is_none() {
@@ -602,12 +736,21 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
 
         // With  -f, sleep for approximately N seconds (default 1.0) between iterations;
         // We wake up if Notify sends an Event or if we wait more than `sleep_sec`.
+        // If any files are in polling fallback mode (after rename in descriptor mode),
+        // use a shorter timeout (100ms) to ensure responsive polling.
+        let poll_interval = std::time::Duration::from_millis(100);
+        let timeout = if observer.files.has_polling_fallback() {
+            poll_interval.min(settings.sleep_sec)
+        } else {
+            settings.sleep_sec
+        };
+
         let rx_result = observer
             .watcher_rx
             .as_mut()
             .unwrap()
             .receiver
-            .recv_timeout(settings.sleep_sec);
+            .recv_timeout(timeout);
 
         if rx_result.is_ok() {
             timeout_counter = 0;
@@ -616,79 +759,40 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
         let mut paths = vec![]; // Paths worth checking for new content to print
         match rx_result {
             Ok(Ok(event)) => {
-                if let Some(event_path) = event.paths.first() {
-                    // Debug: Print event information (remove in production)
-                    // eprintln!("DEBUG: Received event: {:?} on path: {:?}", event.kind, event_path);
-                    // eprintln!("DEBUG: Monitored files: {:?}", observer.files.keys().collect::<Vec<_>>());
-                    
-                    // For Linux with --follow=name, when watching parent directories,
-                    // events come with the parent path, but we need to find which of our
-                    // monitored files are affected.
-                    // For --follow=descriptor, we want to handle events on the file itself.
-                    let mut relevant_file = None;
+                // Use new event resolution logic to properly handle parent directory events
+                let resolved_paths = observer.watcher_rx.as_ref().unwrap().resolve_event_paths(
+                    &event,
+                    &observer.files,
+                    observer.follow,
+                );
 
-                    if observer.files.contains_key(event_path) {
-                        relevant_file = Some(event_path.clone());
-                        // eprintln!("DEBUG: Direct file event for: {:?}", event_path);
-                    } else if observer.follow_name() {
-                        // Only for --follow=name: Check if any monitored files are in this directory
-                        for monitored_path in observer.files.keys() {
-                            if monitored_path.parent() == Some(event_path) {
-                                relevant_file = Some(monitored_path.clone());
-                                // eprintln!("DEBUG: Parent directory event for: {:?} -> {:?}", event_path, monitored_path);
-                                break;
-                            }
-                        }
-                        
-                        // Also check if the event path is a parent directory of any monitored file
-                        if relevant_file.is_none() {
-                            for monitored_path in observer.files.keys() {
-                                if monitored_path.starts_with(event_path) {
-                                    relevant_file = Some(monitored_path.clone());
-                                    // eprintln!("DEBUG: Parent directory (starts_with) event for: {:?} -> {:?}", event_path, monitored_path);
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                for (file_path, watch_source) in resolved_paths {
+                    // Create a modified event with the correct file path for handle_event
+                    let mut modified_event = event.clone();
+                    modified_event.paths = vec![file_path.clone()];
 
-                    if let Some(file_path) = relevant_file {
-                        // Create a modified event with the correct file path for handle_event
-                        let mut modified_event = event.clone();
-                        modified_event.paths = vec![file_path];
-                        paths = observer.handle_event(&modified_event, settings)?;
-                    } else if observer.follow_name() {
-                        // For --follow=name, if no relevant file was found but we're following by name,
-                        // check if any of our monitored files have been recreated
-                        for monitored_path in observer.files.keys() {
-                            if monitored_path.exists() {
-                                // File exists, check if it has new content
-                                // eprintln!("DEBUG: File recreated: {:?}", monitored_path);
-                                let mut modified_event = event.clone();
-                                modified_event.paths = vec![monitored_path.clone()];
-                                modified_event.kind = notify::EventKind::Create(notify::event::CreateKind::File);
-                                paths = observer.handle_event(&modified_event, settings)?;
-                                break;
-                            }
-                        }
-                    }
+                    // Handle the event with watch source information
+                    let event_paths =
+                        observer.handle_event(&modified_event, watch_source, settings)?;
+                    paths.extend(event_paths);
+                }
 
-                    // Fallback for parent-directory notifications on Linux: when we receive a
-                    // directory event (e.g., rename/create/remove in the watched parent), push all
-                    // monitored files under that directory to be checked for new content.
-                    if paths.is_empty() && observer.follow_name() {
-                        if let Ok(md) = event_path.metadata() {
-                            if md.is_dir() {
-                                let mut collected: Vec<std::path::PathBuf> = Vec::new();
-                                for monitored_path in observer.files.keys() {
-                                    if monitored_path.parent() == Some(event_path) {
-                                        collected.push(monitored_path.clone());
-                                    }
-                                }
-                                if !collected.is_empty() {
-                                    paths = collected;
-                                }
-                            }
+                // Fallback: if no paths were resolved but we're in follow=name mode,
+                // check for file recreation
+                if paths.is_empty() && observer.follow_name() {
+                    for monitored_path in observer.files.keys() {
+                        if monitored_path.exists() {
+                            let mut modified_event = event.clone();
+                            modified_event.paths = vec![monitored_path.clone()];
+                            modified_event.kind =
+                                notify::EventKind::Create(notify::event::CreateKind::File);
+                            let event_paths = observer.handle_event(
+                                &modified_event,
+                                WatchSource::File,
+                                settings,
+                            )?;
+                            paths.extend(event_paths);
+                            break;
                         }
                     }
                 }
@@ -725,6 +829,8 @@ pub fn follow(mut observer: Observer, settings: &Settings) -> UResult<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 timeout_counter += 1;
+                // Poll all FDs marked for fallback (after rename in descriptor mode)
+                let _ = observer.files.poll_all_fds(settings.verbose)?;
             }
             Err(e) => {
                 return Err(USimpleError::new(
