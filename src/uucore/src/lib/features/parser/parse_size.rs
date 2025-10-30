@@ -382,7 +382,7 @@ pub fn parse_size_u128(size: &str) -> Result<u128, ParseSizeError> {
 ///
 /// # Examples
 /// ```
-/// use uucore::features::parser::parse_size::extract_thousands_separator_flag;
+/// use uucore::parser::parse_size::extract_thousands_separator_flag;
 /// assert_eq!(extract_thousands_separator_flag("'1"), ("1", true));
 /// assert_eq!(extract_thousands_separator_flag("'1K"), ("1K", true));
 /// assert_eq!(extract_thousands_separator_flag("1024"), ("1024", false));
