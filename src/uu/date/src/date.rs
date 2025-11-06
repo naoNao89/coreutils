@@ -395,6 +395,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
                     // Post-process to ensure RFC 3339 compliant offset format
                     // Only apply fix when using DEFAULT format which uses %Z
                     // %Z may fall back to numeric offset for non-standard timezones
+                    // TODO: If jiff adds %:Z or similar for RFC 3339 compliant %Z fallbacks, replace post-processing
                     let output = if matches!(settings.format, Format::Default) {
                         fix_offset_format(&s)
                     } else {
@@ -527,6 +528,7 @@ pub fn uu_app() -> Command {
 }
 
 /// Return the appropriate format string for the given settings.
+/// For Default format, use RFC 3339 compliant offset when %Z falls back to numeric.
 fn make_format_string(settings: &Settings) -> &str {
     match settings.format {
         Format::Iso8601(ref fmt) => match *fmt {
@@ -544,7 +546,7 @@ fn make_format_string(settings: &Settings) -> &str {
         },
         Format::Resolution => "%s.%N",
         Format::Custom(ref fmt) => fmt,
-        Format::Default => "%a %b %e %X %Z %Y",
+        Format::Default => "%a %b %e %X %:Z %Y", // Use %:Z to ensure RFC 3339 offset when no abbrev
     }
 }
 
@@ -701,18 +703,25 @@ fn parse_date<S: AsRef<str> + Clone>(
     }
 }
 
-/// Check if the given position in bytes starts a timezone offset pattern: ±HHMM
-fn is_offset_pattern(bytes: &[u8], start: usize) -> bool {
-    start + 4 < bytes.len()
-        && (bytes[start] == b'+' || bytes[start] == b'-')
-        && bytes[start + 1].is_ascii_digit()
-        && bytes[start + 2].is_ascii_digit()
-        && bytes[start + 3].is_ascii_digit()
-        && bytes[start + 4].is_ascii_digit()
-        // Make sure it's not already ±HH:MM (has colon)
-        && bytes[start + 3] != b':'
-        // Make sure next char is not a digit (to avoid matching longer numbers)
-        && (start + 5 >= bytes.len() || !bytes[start + 5].is_ascii_digit())
+/// Check if the given position in bytes starts a timezone offset pattern: ±HH or ±HHMM
+/// Returns the length of the pattern if matched, 0 otherwise.
+fn is_digit_pair(bytes: &[u8], start: usize) -> bool {
+    start + 1 < bytes.len() && bytes[start].is_ascii_digit() && bytes[start + 1].is_ascii_digit()
+}
+
+fn offset_pattern_length(bytes: &[u8], start: usize) -> usize {
+    if bytes.get(start) == Some(&b'+') || bytes.get(start) == Some(&b'-') {
+        if is_digit_pair(bytes, start + 1) {
+            if is_digit_pair(bytes, start + 3) && start + 4 < bytes.len() {
+                if start + 5 >= bytes.len() || !bytes[start + 5].is_ascii_digit() {
+                    return 5; // ±HHMM
+                }
+            } else if start + 3 >= bytes.len() || !bytes[start + 3].is_ascii_digit() {
+                return 3; // ±HH
+            }
+        }
+    }
+    0
 }
 
 /// Format a timezone offset to RFC 3339 compliant string: ±HH:MM
@@ -728,21 +737,28 @@ fn format_offset_rfc3339(offset: &jiff::tz::Offset) -> String {
 }
 
 /// Fix timezone offset format to ensure RFC 3339 compliance.
-/// Converts ±HHMM (jiff's default %z format) to ±HH:MM (RFC 3339 compliant).
+/// Converts ±HH or ±HHMM (jiff's default %z format) to ±HH:MM (RFC 3339 compliant).
 /// This handles cases where %Z falls back to numeric offset for non-standard timezones.
 fn fix_offset_format(s: &str) -> String {
     let bytes = s.as_bytes();
-    let mut result = String::with_capacity(s.len() + 2); // Reserve space for potential colons
+    let mut result = String::with_capacity(s.len() + 4); // Reserve space for potential colons
     let mut i = 0;
 
     while i < bytes.len() {
-        if is_offset_pattern(bytes, i) {
-            // Convert ±HHMM to ±HH:MM using string slicing for better readability
-            // SAFETY: from_utf8 is safe here because is_offset_pattern validates ASCII bytes,
+        let len = offset_pattern_length(bytes, i);
+        if len > 0 {
+            // Convert ±HH or ±HHMM to ±HH:MM
+            // SAFETY: from_utf8 is safe here because offset_pattern_length validates ASCII bytes,
             // and the input string comes from strtime::format() which produces valid UTF-8
-            let offset_part = std::str::from_utf8(&bytes[i..i + 5]).unwrap();
-            result.push_str(&format!("{}:{}", &offset_part[..3], &offset_part[3..]));
-            i += 5;
+            let offset_part = std::str::from_utf8(&bytes[i..i + len]).unwrap();
+            if len == 5 {
+                // ±HHMM -> ±HH:MM
+                result.push_str(&format!("{}:{}", &offset_part[..3], &offset_part[3..]));
+            } else {
+                // ±HH -> ±HH:00
+                result.push_str(&format!("{offset_part}:00"));
+            }
+            i += len;
         } else {
             result.push(bytes[i] as char);
             i += 1;
@@ -887,5 +903,29 @@ mod tests {
         assert_eq!(parse_military_timezone_with_offset(""), None); // Empty
         assert_eq!(parse_military_timezone_with_offset("m999"), None); // Too long
         assert_eq!(parse_military_timezone_with_offset("9m"), None); // Starts with digit
+    }
+
+    #[test]
+    fn test_fix_offset_format() {
+        assert_eq!(
+            fix_offset_format("Thu Nov  6 13:44:54 +07"),
+            "Thu Nov  6 13:44:54 +07:00"
+        );
+        assert_eq!(
+            fix_offset_format("Thu Nov  6 13:44:54 +0700"),
+            "Thu Nov  6 13:44:54 +07:00"
+        );
+        assert_eq!(
+            fix_offset_format("Thu Nov  6 13:44:54 -0500"),
+            "Thu Nov  6 13:44:54 -05:00"
+        );
+        assert_eq!(
+            fix_offset_format("Thu Nov  6 13:44:54 UTC"),
+            "Thu Nov  6 13:44:54 UTC"
+        );
+        assert_eq!(
+            fix_offset_format("Thu Nov  6 13:44:54 +07000"),
+            "Thu Nov  6 13:44:54 +07000"
+        );
     }
 }
