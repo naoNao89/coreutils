@@ -17,6 +17,19 @@ use uucore::error::{FromIo, UResult, USimpleError, set_exit_code};
 use uucore::translate;
 use uucore::{format_usage, show_error, show_warning};
 
+// Factorization algorithm modules
+mod algorithm_selection;
+mod crypto_bigint_adapter;
+mod ecm;
+mod ecm_bsgs;
+mod ecm_params;
+mod fermat;
+mod montgomery;
+mod pollard_rho;
+mod precomputed_curves;
+mod trial_division;
+mod u64_factor;
+
 mod options {
     pub static EXPONENTS: &str = "exponents";
     pub static HELP: &str = "help";
@@ -37,37 +50,17 @@ fn print_factors_str(
     };
 
     if x > BigUint::from_u32(1).unwrap() {
-        // use num_prime's factorize64 algorithm for u64 integers
-        if x <= BigUint::from_u64(u64::MAX).unwrap() {
-            let prime_factors = num_prime::nt_funcs::factorize64(x.clone().to_u64_digits()[0]);
-            write_result_u64(w, &x, prime_factors, print_exponents)
-                .map_err_context(|| translate!("factor-error-write-error"))?;
+        // Use optimized algorithm selection for all sizes
+        // Routes to fast u64/u128 paths or num_prime fallback automatically
+        let (prime_factors, remaining) = algorithm_selection::factorize(&x);
+        if remaining.is_some() {
+            return Err(USimpleError::new(
+                1,
+                translate!("factor-error-factorization-incomplete"),
+            ));
         }
-        // use num_prime's factorize128 algorithm for u128 integers
-        else if x <= BigUint::from_u128(u128::MAX).unwrap() {
-            let rx = num_str.trim().parse::<u128>();
-            let Ok(x) = rx else {
-                // return Ok(). it's non-fatal and we should try the next number.
-                show_warning!("{}: {}", num_str.maybe_quote(), rx.unwrap_err());
-                set_exit_code(1);
-                return Ok(());
-            };
-            let prime_factors = num_prime::nt_funcs::factorize128(x);
-            write_result_u128(w, &x, prime_factors, print_exponents)
-                .map_err_context(|| translate!("factor-error-write-error"))?;
-        }
-        // use num_prime's fallible factorization for anything greater than u128::MAX
-        else {
-            let (prime_factors, remaining) = num_prime::nt_funcs::factors(x.clone(), None);
-            if let Some(_remaining) = remaining {
-                return Err(USimpleError::new(
-                    1,
-                    translate!("factor-error-factorization-incomplete"),
-                ));
-            }
-            write_result_big_uint(w, &x, prime_factors, print_exponents)
-                .map_err_context(|| translate!("factor-error-write-error"))?;
-        }
+        write_result_big_uint(w, &x, prime_factors, print_exponents)
+            .map_err_context(|| translate!("factor-error-write-error"))?;
     } else {
         let empty_primes: BTreeMap<BigUint, usize> = BTreeMap::new();
         write_result_big_uint(w, &x, empty_primes, print_exponents)
