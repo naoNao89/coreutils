@@ -24,6 +24,9 @@ uucore = { workspace = true }
 num-bigint = { workspace = true }
 num-prime = { workspace = true }
 fluent = { workspace = true }
+num-integer = "0.1"
+rand = { workspace = true }
+crypto-bigint = "0.5"
 
 [[bin]]
 name = "factor"
