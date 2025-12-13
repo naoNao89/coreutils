@@ -15,9 +15,8 @@ use super::{
 };
 use crate::{
     format::FormatArguments,
-    i18n::UEncoding,
     os_str_as_bytes,
-    quoting_style::{QuotingStyle, escape_name},
+    quoting_style::{QuotingStyle, locale_aware_escape_name},
 };
 use std::{io::Write, num::NonZero, ops::ControlFlow};
 
@@ -411,7 +410,7 @@ impl Spec {
                     show_control: false,
                     commit_dollar_mode: true, // printf %q style
                 };
-                let s = escape_name(args.next_string(position), printf_style, UEncoding::Utf8);
+                let s = locale_aware_escape_name(args.next_string(position), printf_style);
                 let bytes = os_str_as_bytes(&s)?;
                 writer.write_all(bytes).map_err(FormatError::IoError)
             }
