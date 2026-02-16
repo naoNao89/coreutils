@@ -2091,3 +2091,24 @@ fn test_split_directory_already_exists() {
         .no_stdout()
         .stderr_is("split: xaa: Is a directory\n");
 }
+
+// Test that split accepts overflow values by clamping to u64::MAX (GNU behavior)
+// See: https://github.com/uutils/coreutils/issues/10389
+#[test]
+fn test_split_number_overflow_accepted() {
+    // Test that split accepts u64::MAX+1 and clamps to u64::MAX (GNU behavior)
+    let (at, mut ucmd) = at_and_ucmd!();
+    at.touch("file");
+    ucmd.args(&["-n", "18446744073709551616", "file"]) // 2^64 = u64::MAX + 1
+        .succeeds();
+    // split should succeed by clamping to u64::MAX chunks
+    // The output files may not be created if the input is smaller than chunk size,
+    // but the command should not fail
+
+    // Also test with a very large overflow value
+    let (at2, mut ucmd2) = at_and_ucmd!();
+    at2.touch("file2");
+    ucmd2
+        .args(&["-n", "999999999999999999999999999999", "file2"])
+        .succeeds();
+}
