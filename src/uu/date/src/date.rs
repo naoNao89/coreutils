@@ -25,7 +25,9 @@ use uucore::display::Quotable;
 use uucore::error::FromIo;
 use uucore::error::{UError, UResult, strip_errno};
 #[cfg(feature = "i18n-datetime")]
-use uucore::i18n::datetime::{localize_format_string, should_use_icu_locale};
+use uucore::i18n::datetime::{
+    localize_format_string, localize_format_string_with_modifiers, should_use_icu_locale,
+};
 use uucore::i18n::get_ctype_encoding;
 use uucore::quoting_style::{QuotingStyle, escape_bytes};
 use uucore::translate;
@@ -1366,6 +1368,17 @@ fn format_date_with_locale_aware_months(
     #[cfg(feature = "i18n-datetime")] skip_localization: bool,
     #[cfg(not(feature = "i18n-datetime"))] _skip_localization: bool,
 ) -> Result<String, String> {
+    // Resolve POSIX E/O locale modifiers via ICU before anything else, so jiff
+    // never sees specifiers like `%EY` it cannot format. The returned string
+    // is already localized; running `localize_format_string` on it below is
+    // a harmless no-op for the substituted parts.
+    #[cfg(feature = "i18n-datetime")]
+    let eo_localized: Option<String> = (!skip_localization
+        && format_modifiers::has_locale_modifiers(format_string))
+    .then(|| localize_format_string_with_modifiers(format_string, date.date()).0);
+    #[cfg(feature = "i18n-datetime")]
+    let format_string: &str = eo_localized.as_deref().unwrap_or(format_string);
+
     // Apply locale-aware name substitution (month/day names) before modifier
     // processing, so that formats like "%-e" don't bypass localization of "%b"/"%A".
     // The owned String is kept in `localized` so `fmt` can borrow from it for the

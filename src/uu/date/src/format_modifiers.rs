@@ -23,6 +23,8 @@
 //! - `#`: Swap the case of names; lowercase %p and %Z, even with `^`;
 //!   no effect on %c and %r (%P is always lowercase)
 //! - `+`: Force display of sign (+ for positive, - for negative)
+//! - `E`: Use locale's alternative representation (e.g., alternative date format, era names)
+//! - `O`: Use locale's alternative numeric symbols (e.g., Arabic-Indic digits)
 //!
 //! ### Width
 //! - One or more digits specifying minimum field width
@@ -95,7 +97,13 @@ fn field_width_too_large(width: usize, specifier: &str) -> FormatError {
 
 /// A parsed `%`-format specifier: `%[flags][width][:colons]<letter>`.
 pub struct ParsedSpec<'a> {
-    /// Flag characters from `[_0^#+-]`.
+    /// Flag characters from `[_0^#+-EO]`.
+    ///
+    /// `E`/`O` are POSIX locale modifiers (alternative representation /
+    /// alternative numerals). They are recognized here so `%EY` parses as
+    /// flags `"E"` plus spec `"Y"`; padding logic ignores them and the base
+    /// specifier is passed to jiff, while `date.rs` resolves them via ICU
+    /// before formatting.
     pub flags: &'a str,
     /// Explicit width, if present. `None` means no width was specified.
     /// A value that overflows `usize` is represented as `Some(usize::MAX)` so
@@ -109,7 +117,7 @@ pub struct ParsedSpec<'a> {
 
 /// Try to parse a format spec at the start of `s`.
 ///
-/// Implements the grammar `%[_0^#+-]*[0-9]*:{0,3}[a-zA-Z]` anchored at the
+/// Implements the grammar `%[_0^#+-EO]*[0-9]*:{0,3}[a-zA-Z]` anchored at the
 /// beginning of `s`. Returns `None` if `s` does not start with `%` or no
 /// valid specifier follows.
 pub fn parse_format_spec(s: &str) -> Option<ParsedSpec<'_>> {
@@ -118,9 +126,9 @@ pub fn parse_format_spec(s: &str) -> Option<ParsedSpec<'_>> {
 
     let mut pos = 1;
 
-    // Flags: any of [_0^#+-], zero or more.
+    // Flags: any of [_0^#+-EO], zero or more.
     let flags_start = pos;
-    while bytes.get(pos).is_some_and(|c| b"_0^#+-".contains(c)) {
+    while bytes.get(pos).is_some_and(|c| b"_0^#+-EO".contains(c)) {
         pos += 1;
     }
     let flags = &s[flags_start..pos];
@@ -151,6 +159,32 @@ pub fn parse_format_spec(s: &str) -> Option<ParsedSpec<'_>> {
         spec,
         len: pos,
     })
+}
+
+/// Check if a format string contains POSIX E/O locale modifiers (`%E`, `%O`).
+///
+/// Used by `date.rs` to decide whether ICU-based E/O resolution is needed
+/// before formatting. `%%E`/`%%O` (escaped percents) are ignored.
+pub fn has_locale_modifiers(format_string: &str) -> bool {
+    let bytes = format_string.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if bytes.get(i + 1) == Some(&b'%') {
+                i += 2;
+                continue;
+            }
+            if let Some(parsed) = parse_format_spec(&format_string[i..]) {
+                if parsed.flags.contains('E') || parsed.flags.contains('O') {
+                    return true;
+                }
+                i += parsed.len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Check if format string contains any GNU modifiers and format if present.
