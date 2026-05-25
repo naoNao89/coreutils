@@ -47,4 +47,3 @@ selinux = [
 [[bin]]
 name = "chcon"
 path = "src/main.rs"
-required-features = ["uucore/selinux"]

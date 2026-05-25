@@ -45,4 +45,3 @@ selinux = [
 [[bin]]
 name = "runcon"
 path = "src/main.rs"
-required-features = ["uucore/selinux"]
