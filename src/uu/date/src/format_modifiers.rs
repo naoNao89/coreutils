@@ -120,15 +120,18 @@ pub struct ParsedSpec<'a> {
 }
 
 /// Returns true if `spec` (final letter) accepts the `E` locale modifier.
+///
+/// Covers `%c %C %x %X %y %Y` plus the GNU-verified `%Er` and `%E:z`
+/// (colon timezones end in `z`); anything else (e.g. `%EB`) stays literal.
 fn accepts_e_modifier(spec: char) -> bool {
-    matches!(spec, 'c' | 'C' | 'x' | 'X' | 'y' | 'Y')
+    matches!(spec, 'c' | 'C' | 'x' | 'X' | 'y' | 'Y' | 'r' | 'z')
 }
 
 /// Returns true if `spec` (final letter) accepts the `O` locale modifier.
 ///
 /// Covers the POSIX numeric set plus the GNU extensions verified against
-/// GNU date 9.7 (`%Oj`, `%Oz`, `%ON`, `%Op`, `%Ob`, `%Oh`); anything else
-/// (e.g. `%OC`, `%Og`) stays literal.
+/// GNU date 9.7 (`%Oj`, `%Oz`, `%ON`, `%Op`, `%Ob`, `%Oh`, `%OC`, `%Og`,
+/// `%OG`, `%Ok`, `%OZ`); anything else (e.g. `%Oq`) stays literal.
 fn accepts_o_modifier(spec: char) -> bool {
     matches!(
         spec,
@@ -151,6 +154,11 @@ fn accepts_o_modifier(spec: char) -> bool {
             | 'p'
             | 'b'
             | 'h'
+            | 'C'
+            | 'g'
+            | 'G'
+            | 'k'
+            | 'Z'
     )
 }
 
@@ -1310,6 +1318,13 @@ mod tests {
             ("%Op", Some(("", None, Some('O'), "p", 3))),
             ("%Ob", Some(("", None, Some('O'), "b", 3))),
             ("%Oh", Some(("", None, Some('O'), "h", 3))),
+            ("%OC", Some(("", None, Some('O'), "C", 3))),
+            ("%Og", Some(("", None, Some('O'), "g", 3))),
+            ("%OG", Some(("", None, Some('O'), "G", 3))),
+            ("%Ok", Some(("", None, Some('O'), "k", 3))),
+            ("%OZ", Some(("", None, Some('O'), "Z", 3))),
+            ("%Er", Some(("", None, Some('E'), "r", 3))),
+            ("%E:z", Some(("", None, Some('E'), ":z", 4))),
             // ---- colon-prefixed specifiers (numeric timezones) ----
             ("%:z", Some(("", None, None, ":z", 3))),
             ("%::z", Some(("", None, None, "::z", 4))),
@@ -1336,8 +1351,7 @@ mod tests {
             ("%EO", None),
             ("%OE", None),
             ("%Ox", None),
-            ("%OC", None),
-            ("%Og", None),
+            ("%Oq", None),
         ];
 
         for (input, expected) in cases {
@@ -1363,6 +1377,8 @@ mod tests {
             ("%EY", true),
             ("%OB", true),
             ("%Oj", true),
+            ("%OC", true),
+            ("%Er", true),
             ("%_10EY", true),
             // %% mixed with a real modifier is still detected.
             ("%%%-d", true),
@@ -1385,7 +1401,7 @@ mod tests {
             // ---- invalid E/O pairs are literals, not modifiers ----
             ("%EB", false),
             ("%Ej", false),
-            ("%OC", false),
+            ("%Oq", false),
         ];
 
         for (input, expected) in cases {

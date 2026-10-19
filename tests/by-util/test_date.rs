@@ -3592,11 +3592,36 @@ fn test_date_eo_gnu_c_locale_table() {
         ("%Op", "AM\n"),
         ("%Ob", "Jun\n"),
         ("%Oh", "Jun\n"),
+        // Second GNU batch (date 9.7, C locale: same as base conversion).
+        ("%OC", "19\n"),
+        ("%Og", "99\n"),
+        ("%OG", "1999\n"),
+        ("%Oz", "+0000\n"),
+        ("%OZ", "UTC\n"),
     ] {
         new_ucmd!()
             .env("TZ", "UTC")
             .env("LC_ALL", "C")
             .args(&["-d", "1999-06-01", &format!("+{format}")])
+            .succeeds()
+            .stdout_is(expected);
+    }
+}
+
+#[test]
+fn test_date_eo_gnu_c_locale_noon_table() {
+    // GNU date 9.7 reference (TZ=UTC, LC_ALL=C, -d 1999-06-01 12:34:56):
+    // E/O modifiers fall back to the plain conversion.
+    for (format, expected) in [
+        ("%Er", "12:34:56 PM\n"),
+        ("%E:z", "+00:00\n"),
+        ("%Ok", "12\n"),
+        ("%Op", "PM\n"),
+    ] {
+        new_ucmd!()
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C")
+            .args(&["-d", "1999-06-01 12:34:56", &format!("+{format}")])
             .succeeds()
             .stdout_is(expected);
     }
