@@ -3596,7 +3596,6 @@ fn test_date_eo_gnu_c_locale_table() {
         ("%OC", "19\n"),
         ("%Og", "99\n"),
         ("%OG", "1999\n"),
-        ("%Oz", "+0000\n"),
         ("%OZ", "UTC\n"),
     ] {
         new_ucmd!()
@@ -3615,6 +3614,7 @@ fn test_date_eo_gnu_c_locale_noon_table() {
     for (format, expected) in [
         ("%Er", "12:34:56 PM\n"),
         ("%E:z", "+00:00\n"),
+        ("%E::z", "+00:00:00\n"),
         ("%Ok", "12\n"),
         ("%Op", "PM\n"),
     ] {
@@ -3643,6 +3643,83 @@ fn test_date_eo_invalid_stays_literal() {
         .args(&["-d", "1999-06-01", "+%%EY"])
         .succeeds()
         .stdout_is("%EY\n");
+    // GNU rejects `O` on colon timezones: `%O:z` renders as literal `%O:`.
+    new_ucmd!()
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .args(&["-d", "1999-06-01", "+%O:z"])
+        .succeeds()
+        .stdout_is("%O:\n");
+}
+
+/// Differential E/O coverage probe against a GNU `date` oracle.
+///
+/// Ignored by default: it needs a GNU binary and exists to FIND gaps in one
+/// run, not to gate CI. Run manually with e.g.:
+/// `GNU_DATE_BIN=/bin/date cargo test --test tests -- --ignored test_date_eo_differential_gnu`
+/// Without `GNU_DATE_BIN`, `gdate` or a GNU `date` in `PATH` is used.
+#[test]
+#[ignore]
+fn test_date_eo_differential_gnu() {
+    fn gnu_date_bin() -> Option<String> {
+        if let Ok(bin) = std::env::var("GNU_DATE_BIN") {
+            return Some(bin);
+        }
+        for cand in ["gdate", "date"] {
+            let out = std::process::Command::new(cand)
+                .arg("--version")
+                .output()
+                .ok()?;
+            if out.status.success()
+                && String::from_utf8_lossy(&out.stdout).contains("GNU coreutils")
+            {
+                return Some(cand.to_string());
+            }
+        }
+        None
+    }
+
+    let oracle = gnu_date_bin()
+        .expect("no GNU date oracle found; set GNU_DATE_BIN=/bin/date (or install gdate)");
+
+    let mut formats = Vec::new();
+    for modifier in ['E', 'O'] {
+        for spec in ('a'..='z').chain('A'..='Z') {
+            formats.push(format!("%{modifier}{spec}"));
+        }
+    }
+    formats.extend(["%E:z", "%E::z", "%E:::z", "%O:z", "%O::z", "%O:::z"].map(str::to_string));
+
+    let mut mismatches = Vec::new();
+    for format in &formats {
+        let ours = new_ucmd!()
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C")
+            .args(&["-d", "1999-06-01 12:34:56", &format!("+{format}")])
+            .run();
+        let theirs = std::process::Command::new(&oracle)
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C")
+            .args(["-d", "1999-06-01 12:34:56", &format!("+{format}")])
+            .output()
+            .expect("failed to run GNU date oracle");
+        let theirs_out = String::from_utf8_lossy(&theirs.stdout).into_owned();
+        if ours.succeeded() != theirs.status.success() || ours.stdout_str() != theirs_out {
+            mismatches.push(format!(
+                "{format:8} ours={:?} gnu={theirs_out:?}",
+                ours.stdout_str()
+            ));
+        }
+    }
+
+    for row in &mismatches {
+        eprintln!("mismatch: {row}");
+    }
+    assert!(
+        mismatches.is_empty(),
+        "{} E/O differential mismatches vs GNU (see stderr)",
+        mismatches.len()
+    );
 }
 
 #[test]

@@ -1380,6 +1380,16 @@ fn format_date_with_locale_aware_months(
                 i += parsed.len;
                 continue;
             };
+            // GNU rejects `O` on colon-prefixed timezone specs: `%O:z`
+            // renders literally as `%O:`, unlike `%E:z` which formats the
+            // base spec. Escape the `%` so jiff copies it through verbatim.
+            if modifier == 'O' && parsed.spec.starts_with(':') {
+                eo_resolved.push_str("%%O");
+                // `spec` is ASCII colons plus one letter; drop the letter.
+                eo_resolved.push_str(&parsed.spec[..parsed.spec.len() - 1]);
+                i += parsed.len;
+                continue;
+            }
             #[cfg(not(feature = "i18n-datetime"))]
             let _ = modifier;
             // Push the base conversion (`%[flags][width]spec`) for jiff.

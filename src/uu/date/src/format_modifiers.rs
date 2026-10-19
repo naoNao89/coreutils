@@ -33,8 +33,11 @@
 //! - Field will be padded to this width using the padding character
 //!
 //! ### Locale modifiers
-//! - `E`: alternative representation, valid before `c C x X y Y`
-//! - `O`: alternative numerals, valid before `d e H I m M S u U V w W y` and `B`
+//! - `E`: alternative representation, valid before `c C x X y Y r z`
+//!   (`%E:z` formats the base timezone; `%O:z` stays literal `%O:`).
+//! - `O`: alternative numerals, valid before `d e H I m M S u U V w W y`,
+//!   `B` (`%OB`), and the GNU extensions `j z N p b h C g G k Z`.
+//!   Unlisted pairs (e.g. `%EB`, `%Oq`) stay literal.
 //!
 //! ### Examples
 //! - `%10Y`: Year padded to 10 digits with zeros (0000001999)
