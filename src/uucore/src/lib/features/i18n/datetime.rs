@@ -309,7 +309,8 @@ pub fn resolve_eo_conversion(modifier: char, spec: char, date: JiffDate) -> Opti
             format_with!(MONTH_LONG, &iso_date)
         }
         ('O', 'd' | 'e' | 'H' | 'I' | 'm' | 'M' | 'S' | 'u' | 'U' | 'V' | 'w' | 'W' | 'y') => None,
-        // Unsupported combinations (e.g. `%EB`, `%Ej`): caller keeps them literal.
+        // Anything else: no substitute. The caller decides via the parser's
+        // validity table whether to use the base conversion or stay literal.
         _ => None,
     }
 }

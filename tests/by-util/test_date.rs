@@ -3585,6 +3585,13 @@ fn test_date_eo_gnu_c_locale_table() {
         ("%Om", "06\n"),
         ("%OH", "00\n"),
         ("%OS", "00\n"),
+        // GNU extensions accepted by GNU date 9.7 (C locale: same as base).
+        ("%Oj", "152\n"),
+        ("%Oz", "+0000\n"),
+        ("%ON", "000000000\n"),
+        ("%Op", "AM\n"),
+        ("%Ob", "Jun\n"),
+        ("%Oh", "Jun\n"),
     ] {
         new_ucmd!()
             .env("TZ", "UTC")
