@@ -3675,7 +3675,7 @@ fn test_date_eo_invalid_stays_literal() {
 /// `GNU_DATE_BIN=/bin/date cargo test --test tests -- --ignored test_date_eo_differential_gnu`
 /// Without `GNU_DATE_BIN`, `gdate` or a GNU `date` in `PATH` is used.
 #[test]
-#[ignore]
+#[ignore = "needs a GNU date oracle; run manually with GNU_DATE_BIN set"]
 fn test_date_eo_differential_gnu() {
     fn gnu_date_bin() -> Option<String> {
         if let Ok(bin) = std::env::var("GNU_DATE_BIN") {
