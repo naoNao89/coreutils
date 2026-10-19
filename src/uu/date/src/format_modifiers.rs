@@ -218,6 +218,11 @@ pub fn parse_format_spec(s: &str) -> Option<ParsedSpec<'_>> {
     let spec = &s[spec_start..pos];
 
     if let Some(modifier) = locale_modifier {
+        // Colons only modify the timezone `z` (`%E:z`, `%O:z`, ...). A colon
+        // before any other letter (e.g. `%O:p`, `%E:q`) is not a conversion.
+        if spec.starts_with(':') && spec_letter != 'z' {
+            return None;
+        }
         let valid = match modifier {
             'E' => accepts_e_modifier(spec_letter),
             'O' => accepts_o_modifier(spec_letter),
@@ -1328,6 +1333,9 @@ mod tests {
             ("%OZ", Some(("", None, Some('O'), "Z", 3))),
             ("%Er", Some(("", None, Some('E'), "r", 3))),
             ("%E:z", Some(("", None, Some('E'), ":z", 4))),
+            ("%E::z", Some(("", None, Some('E'), "::z", 5))),
+            ("%O::z", Some(("", None, Some('O'), "::z", 5))),
+            ("%O:::z", Some(("", None, Some('O'), ":::z", 6))),
             // ---- colon-prefixed specifiers (numeric timezones) ----
             ("%:z", Some(("", None, None, ":z", 3))),
             ("%::z", Some(("", None, None, "::z", 4))),
@@ -1355,6 +1363,9 @@ mod tests {
             ("%OE", None),
             ("%Ox", None),
             ("%Oq", None),
+            // ---- colon specs need `z` under a modifier ----
+            ("%O:p", None),
+            ("%E:p", None),
         ];
 
         for (input, expected) in cases {
@@ -1382,6 +1393,7 @@ mod tests {
             ("%Oj", true),
             ("%OC", true),
             ("%Er", true),
+            ("%O::z", true),
             ("%_10EY", true),
             // %% mixed with a real modifier is still detected.
             ("%%%-d", true),
@@ -1405,6 +1417,8 @@ mod tests {
             ("%EB", false),
             ("%Ej", false),
             ("%Oq", false),
+            ("%O:p", false),
+            ("%E:p", false),
         ];
 
         for (input, expected) in cases {

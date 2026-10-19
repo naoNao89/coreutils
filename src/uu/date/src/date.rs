@@ -1380,13 +1380,12 @@ fn format_date_with_locale_aware_months(
                 i += parsed.len;
                 continue;
             };
-            // GNU rejects `O` on colon-prefixed timezone specs: `%O:z`
-            // renders literally as `%O:`, unlike `%E:z` which formats the
-            // base spec. Escape the `%` so jiff copies it through verbatim.
+            // GNU renders every `%O` colon-timezone form as literal `%O:`
+            // (`%O:z`, `%O::z` and `%O:::z` all give `%O:`). Escape the `%`
+            // so jiff copies it through verbatim. (The parser above only
+            // lets colon specs through for `z`, so this is always one.)
             if modifier == 'O' && parsed.spec.starts_with(':') {
-                eo_resolved.push_str("%%O");
-                // `spec` is ASCII colons plus one letter; drop the letter.
-                eo_resolved.push_str(&parsed.spec[..parsed.spec.len() - 1]);
+                eo_resolved.push_str("%%O:");
                 i += parsed.len;
                 continue;
             }

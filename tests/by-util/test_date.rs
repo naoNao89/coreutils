@@ -3650,6 +3650,22 @@ fn test_date_eo_invalid_stays_literal() {
         .args(&["-d", "1999-06-01", "+%O:z"])
         .succeeds()
         .stdout_is("%O:\n");
+    // GNU collapses every `%O` colon-timezone form to a single `%O:`.
+    for (format, expected) in [("+%O::z", "%O:\n"), ("+%O:::z", "%O:\n")] {
+        new_ucmd!()
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C")
+            .args(&["-d", "1999-06-01", format])
+            .succeeds()
+            .stdout_is(expected);
+    }
+    // Colon before a non-timezone letter is not a conversion at all.
+    new_ucmd!()
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .args(&["-d", "1999-06-01", "+%O:p"])
+        .succeeds()
+        .stdout_is("%O:p\n");
 }
 
 /// Differential E/O coverage probe against a GNU `date` oracle.
@@ -3666,10 +3682,9 @@ fn test_date_eo_differential_gnu() {
             return Some(bin);
         }
         for cand in ["gdate", "date"] {
-            let out = std::process::Command::new(cand)
-                .arg("--version")
-                .output()
-                .ok()?;
+            let Ok(out) = std::process::Command::new(cand).arg("--version").output() else {
+                continue;
+            };
             if out.status.success()
                 && String::from_utf8_lossy(&out.stdout).contains("GNU coreutils")
             {
