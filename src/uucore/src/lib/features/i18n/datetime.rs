@@ -161,9 +161,8 @@ pub fn localize_format_string(format: &str, date: JiffDate) -> String {
         fmt = fmt.replace("%a", &name);
     }
 
-    // Handle E and O modifiers (POSIX locale extensions)
-    // These request alternative representations (e.g., era names, alternative numerals)
-    fmt = handle_eo_modifiers(&fmt, iso_date, locale);
+    // E/O modifiers are resolved by `localize_format_string_with_modifiers`
+    // (backed by `resolve_eo_conversion`); see below.
 
     fmt.replace(PERCENT_PLACEHOLDER, "%%")
 }
@@ -274,142 +273,161 @@ fn get_locale_months_inner() -> Option<[Vec<u8>; 12]> {
     Some(months)
 }
 
-/// Handle E and O modifiers for alternative locale-specific representations.
+/// Resolve a POSIX E/O locale modifier pair to its alternative representation.
 ///
-/// E modifiers request alternative representations (e.g., era names, alternative date formats).
-/// O modifiers request alternative numeric symbols (e.g., Arabic-Indic digits, Eastern Arabic numerals).
-fn handle_eo_modifiers(fmt: &str, iso_date: Date<Iso>, locale: &Locale) -> String {
-    let mut result = fmt.to_string();
-    let locale_prefs = locale.clone().into();
-
-    // Handle %OB - Alternative month names (standalone format)
-    // This is used when the month name appears without a day (e.g., "June" vs "June 1st")
-    if result.contains("%OB") {
-        // For now, treat %OB the same as %B since ICU doesn't have a direct standalone variant
-        if let Ok(f) = DateTimeFormatter::try_new(locale_prefs, fieldsets::M::long()) {
-            result = result.replace("%OB", &f.format(&iso_date).to_string());
-        }
-    }
-
-    // Handle simple E modifiers without other flags: %EY, %Ey, %EC, %EB
-    // Process these first before the more complex patterns
-    for (pattern, _replacement) in [
-        ("%EY", iso_date.year().extended_year().to_string()),
-        (
-            "%Ey",
-            format!("{:02}", iso_date.year().extended_year() % 100),
-        ),
-        (
-            "%EC",
-            format!("{:02}", iso_date.year().extended_year() / 100),
-        ),
-    ] {
-        if result.contains(pattern) {
-            // For non-Gregorian calendars, use the extended year as alternative representation
-            let calendar_type = get_locale_calendar_type(locale);
-            let alt_year = if calendar_type == CalendarType::Gregorian {
-                iso_date.year().extended_year()
-            } else {
-                match calendar_type {
-                    CalendarType::Buddhist => {
-                        let d = iso_date.to_calendar(Buddhist);
-                        d.year().extended_year()
-                    }
-                    CalendarType::Persian => {
-                        let d = iso_date.to_calendar(Persian);
-                        d.year().extended_year()
-                    }
-                    CalendarType::Ethiopian => {
-                        let d = iso_date.to_calendar(Ethiopian::new());
-                        d.year().extended_year()
-                    }
-                    CalendarType::Gregorian => unreachable!(),
-                }
+/// `modifier` is `E` or `O`, `spec` the conversion letter (e.g. `Y` in `%EY`).
+/// Returns `Some(raw)` with the unpadded substitute value when ICU provides
+/// one, or `None` when the caller should format the base `%spec` conversion
+/// via jiff instead. Unsupported combinations (e.g. `('E', 'B')`) also return
+/// `None`; the caller keeps those literal (`parse_format_spec` in
+/// `uu_date::format_modifiers` already rejects invalid pairs so they never
+/// reach the formatter).
+///
+/// Honest calibration notes:
+/// - The `E` year family (`%EY`, `%Ey`, `%EC`) is a *calendar-year fallback*
+///   computed arithmetically from the locale's calendar year, exactly matching
+///   GNU in the C locale. It is NOT true era formatting: `%EC`/`%Ey` are
+///   derived from the extended year (`alt / 100`, `alt % 100`) rather than
+///   from era names, which would need full ICU era support (TODO).
+/// - `%OB` (standalone month name) resolves only for non-C locales. In the C
+///   locale this returns `None` so the caller formats base `%B` via jiff;
+///   going through ICU's root locale here would yield `M06`-style codes
+///   instead of `June`.
+/// - `%O` numerics fall back to the base conversion. Full numeral-system
+///   support would need ICU's `FixedDecimalFormatter` with the locale's
+///   numbering system; that is deferred (TODO).
+pub fn resolve_eo_conversion(modifier: char, spec: char, date: JiffDate) -> Option<String> {
+    match (modifier, spec) {
+        ('E', 'Y' | 'y' | 'C') => {
+            let (locale, _) = get_time_locale();
+            let iso_date = Date::<Iso>::convert_from(date);
+            let alt_year = match get_locale_calendar_type(locale) {
+                CalendarType::Gregorian => iso_date.year().extended_year(),
+                CalendarType::Buddhist => iso_date.to_calendar(Buddhist).year().extended_year(),
+                CalendarType::Persian => iso_date.to_calendar(Persian).year().extended_year(),
+                CalendarType::Ethiopian => iso_date
+                    .to_calendar(Ethiopian::new())
+                    .year()
+                    .extended_year(),
             };
-
-            let value = match pattern {
-                "%EY" => alt_year.to_string(),
-                "%Ey" => format!("{:02}", alt_year % 100),
-                "%EC" => format!("{:02}", alt_year / 100),
-                _ => unreachable!(),
-            };
-            result = result.replace(pattern, &value);
+            // Calendar-year fallback, not era formatting: `%EC`/`%Ey` are plain
+            // arithmetic on the calendar year, matching GNU C-locale output.
+            Some(match spec {
+                'Y' => alt_year.to_string(),
+                'y' => format!("{:02}", alt_year % 100),
+                _ => format!("{:02}", alt_year / 100),
+            })
         }
-    }
-
-    // Handle O modifiers for alternative numeric symbols
-    // These are locale-specific and typically use native numeral systems
-    // For now, we fall back to standard formatting since full O modifier support
-    // requires ICU's FixedDecimalFormatter with locale-specific numeral systems
-    let o_specifiers = [
-        ("%Od", "d"),
-        ("%Oe", "e"),
-        ("%OH", "H"),
-        ("%OI", "I"),
-        ("%Om", "m"),
-        ("%OM", "M"),
-        ("%OS", "S"),
-        ("%Ou", "u"),
-        ("%OU", "U"),
-        ("%OV", "V"),
-        ("%Ow", "w"),
-        ("%OW", "W"),
-        ("%Oy", "y"),
-    ];
-
-    for (o_spec, base_spec) in o_specifiers {
-        if result.contains(o_spec) {
-            // Convert O modifier to base specifier for jiff to handle
-            // Full O modifier support would use ICU's FixedDecimalFormatter
-            // with the locale's default numeral system
-            result = result.replace(o_spec, &format!("%{base_spec}"));
+        ('E', 'c' | 'x' | 'X') => {
+            // Alternative date/time representations need ICU era names (TODO);
+            // fall back to the base conversion.
+            None
         }
+        ('O', 'B') => {
+            // Standalone month name, ICU long form, non-C locales only (see above).
+            if !should_use_icu_locale() {
+                return None;
+            }
+            let iso_date = Date::<Iso>::convert_from(date);
+            format_with!(MONTH_LONG, &iso_date)
+        }
+        ('O', 'd' | 'e' | 'H' | 'I' | 'm' | 'M' | 'S' | 'u' | 'U' | 'V' | 'w' | 'W' | 'y') => {
+            // Alternative numeric symbols need `FixedDecimalFormatter` (TODO);
+            // fall back to the base conversion.
+            None
+        }
+        // Unsupported combinations (e.g. `%EB`, `%Ej`): caller keeps them literal.
+        _ => None,
     }
-
-    result
 }
 
-/// Check if format string contains E or O locale modifiers.
+/// Validity table for E/O modifier pairs, mirroring `uu_date::format_modifiers`
+/// (`accepts_e_modifier` / `accepts_o_modifier`).
 ///
-/// This is a simple check that looks for the presence of %E or %O patterns.
-/// It handles both simple modifiers (%EY, %Od) and modifiers with flags/width (%_10EY).
-pub fn has_locale_modifiers(format: &str) -> bool {
-    // Simple check for %E or %O patterns
-    // Note: This is a quick check that may have false positives for %%E or similar,
-    // but that's acceptable for our use case
-    format.contains("%E") || format.contains("%O")
+/// The lists are duplicated (not shared) on purpose for layering: `uucore` is
+/// the shared low-level crate and must not depend on `uu_date`, while E/O
+/// *detection* belongs to `uu_date::format_modifiers`, which owns the format
+/// grammar. Keep both sides in sync when the tables change.
+fn is_supported_eo_pair(modifier: char, spec: char) -> bool {
+    match modifier {
+        'E' => matches!(spec, 'c' | 'C' | 'x' | 'X' | 'y' | 'Y'),
+        'O' => matches!(
+            spec,
+            'd' | 'e' | 'H' | 'I' | 'm' | 'M' | 'S' | 'u' | 'U' | 'V' | 'w' | 'W' | 'y' | 'B'
+        ),
+        _ => false,
+    }
 }
 
 /// Transform a strftime format string with E/O modifiers to use locale-specific values.
 ///
-/// This function processes E/O modifiers and returns a tuple of:
-/// - The transformed format string with E/O modifiers replaced by their values
-/// - A flag indicating whether E/O modifiers were found and processed
+/// Thin wrapper around [`resolve_eo_conversion`] kept for the `uu_date`
+/// caller (`date.rs`): a single-pass scanner resolves each simple `%E`/`%O`
+/// conversion exactly once, and `%%` escapes are copied through untouched so
+/// nothing is resolved twice. Each conversion becomes its `Some(raw)` value,
+/// the base `%spec` when the pair is valid but needs no substitute (`None`
+/// fallback), or stays literal when the pair is invalid (e.g. `%EB`).
 ///
-/// This is used by the date command to handle POSIX locale extensions.
+/// Only simple `%E`/`%O` forms are resolved here. Forms carrying flags/width
+/// (e.g. `%_10EY`, `%010Od`) are left for the `uu_date` pipeline, which owns
+/// padding via `ParsedSpec`; substituting raw text here would drop the width.
+/// The trailing [`localize_format_string`] pass is gated on
+/// [`should_use_icu_locale`] so C-locale base conversions (e.g. `%B` from a
+/// `%OB` fallback) keep jiff's English names instead of ICU root codes.
+///
+/// Returns the transformed string plus whether any `%E`/`%O` pattern was seen.
 pub fn localize_format_string_with_modifiers(format: &str, date: JiffDate) -> (String, bool) {
-    const PERCENT_PLACEHOLDER: &str = "\x00\x00";
-
-    let (locale, _) = get_time_locale();
-
-    // Check if format contains E or O modifiers
-    let has_eo_modifiers = has_locale_modifiers(format);
-
-    if !has_eo_modifiers {
-        // No E/O modifiers, use standard localization
-        return (localize_format_string(format, date), false);
+    let mut out = String::with_capacity(format.len());
+    let mut found = false;
+    let bytes = format.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            // `%%` is a literal percent: copy both bytes, never resolve inside.
+            if bytes.get(i + 1) == Some(&b'%') {
+                out.push_str("%%");
+                i += 2;
+                continue;
+            }
+            if let (Some(&m), Some(&s)) = (bytes.get(i + 1), bytes.get(i + 2))
+                && (m == b'E' || m == b'O')
+                && s.is_ascii_alphabetic()
+            {
+                found = true;
+                let (modifier, spec) = (m as char, s as char);
+                if let Some(raw) = resolve_eo_conversion(modifier, spec, date) {
+                    out.push_str(&raw);
+                } else if is_supported_eo_pair(modifier, spec) {
+                    out.push('%');
+                    out.push(spec);
+                } else {
+                    out.push('%');
+                    out.push(modifier);
+                    out.push(spec);
+                }
+                i += 3;
+                continue;
+            }
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        // Pass-through: copy a single UTF-8 code point unchanged.
+        let ch_len = format[i..].chars().next().map_or(1, char::len_utf8);
+        out.push_str(&format[i..i + ch_len]);
+        i += ch_len;
     }
 
-    let iso_date = Date::<Iso>::convert_from(date);
-    let mut fmt = format.replace("%%", PERCENT_PLACEHOLDER);
-
-    // Process E and O modifiers
-    fmt = handle_eo_modifiers(&fmt, iso_date, locale);
-
-    // Apply standard localization for remaining specifiers
-    fmt = localize_format_string(&fmt, date);
-
-    (fmt.replace(PERCENT_PLACEHOLDER, "%%"), true)
+    if !found {
+        return (localize_format_string(format, date), false);
+    }
+    // Remaining base conversions (e.g. `%B` from a C-locale `%OB` fallback)
+    // still need month/day-name localization, but only off the C locale.
+    if should_use_icu_locale() {
+        (localize_format_string(&out, date), true)
+    } else {
+        (out, true)
+    }
 }
 
 #[cfg(test)]

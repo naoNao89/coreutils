@@ -3493,44 +3493,51 @@ fn test_date_format_modifier_edge_cases() {
 #[test]
 fn test_date_format_modifier_e_alternative_representation() {
     // Test E modifier for alternative representation
+    // In C locale GNU falls back to plain representation: %EY -> year, %EC -> century.
     // %EY should provide locale's alternative year representation (e.g., era names in Japanese)
     new_ucmd!()
         .env("TZ", "UTC")
         .env("LC_ALL", "C")
         .args(&["-d", "1999-06-01", "+%EY"])
-        .succeeds();
+        .succeeds()
+        .stdout_is("1999\n");
 
     // Test %EC for alternative century representation
     new_ucmd!()
         .env("TZ", "UTC")
         .env("LC_ALL", "C")
         .args(&["-d", "1999-06-01", "+%EC"])
-        .succeeds();
+        .succeeds()
+        .stdout_is("19\n");
 }
 
 #[test]
 fn test_date_format_modifier_o_alternative_numerals() {
     // Test O modifier for alternative numeric symbols
+    // In C locale GNU treats %O as no-op: %Od renders like %d, etc.
     // %Od should provide locale's alternative day representation
     new_ucmd!()
         .env("TZ", "UTC")
         .env("LC_ALL", "C")
         .args(&["-d", "1999-06-01", "+%Od"])
-        .succeeds();
+        .succeeds()
+        .stdout_is("01\n");
 
     // Test %Om for alternative month representation
     new_ucmd!()
         .env("TZ", "UTC")
         .env("LC_ALL", "C")
         .args(&["-d", "1999-06-01", "+%Om"])
-        .succeeds();
+        .succeeds()
+        .stdout_is("06\n");
 
-    // Test %OH for alternative hour representation
+    // Test %OH for alternative hour representation (noon -> 12)
     new_ucmd!()
         .env("TZ", "UTC")
         .env("LC_ALL", "C")
         .args(&["-d", "1999-06-01 12:00:00", "+%OH"])
-        .succeeds();
+        .succeeds()
+        .stdout_is("12\n");
 }
 
 #[test]
@@ -3541,24 +3548,86 @@ fn test_date_format_modifier_eo_combined_with_other_modifiers() {
         .env("TZ", "UTC")
         .env("LC_ALL", "C")
         .args(&["-d", "1999-06-01", "+%_10EY"])
-        .succeeds();
+        .succeeds()
+        .stdout_is("      1999\n");
 
     // Test %010Od with zero padding and alternative numerals
     new_ucmd!()
         .env("TZ", "UTC")
         .env("LC_ALL", "C")
         .args(&["-d", "1999-06-01", "+%010Od"])
-        .succeeds();
+        .succeeds()
+        .stdout_is("0000000001\n");
 }
 
 #[test]
 fn test_date_format_modifier_ob_alternative_month_name() {
     // Test %OB for alternative month names (standalone format)
+    // In C locale GNU falls back to full month name.
     new_ucmd!()
         .env("TZ", "UTC")
         .env("LC_ALL", "C")
         .args(&["-d", "1999-06-01", "+%OB"])
-        .succeeds();
+        .succeeds()
+        .stdout_is("June\n");
+}
+
+#[test]
+fn test_date_eo_gnu_c_locale_table() {
+    // GNU C-locale reference table (TZ=UTC, LC_ALL=C, -d 1999-06-01):
+    // E/O modifiers fall back to the plain conversion.
+    for (format, expected) in [
+        ("%EY", "1999\n"),
+        ("%EC", "19\n"),
+        ("%Ey", "99\n"),
+        ("%OB", "June\n"),
+        ("%Od", "01\n"),
+        ("%Om", "06\n"),
+        ("%OH", "00\n"),
+        ("%OS", "00\n"),
+    ] {
+        new_ucmd!()
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C")
+            .args(&["-d", "1999-06-01", &format!("+{format}")])
+            .succeeds()
+            .stdout_is(expected);
+    }
+}
+
+#[test]
+fn test_date_eo_invalid_stays_literal() {
+    // Unknown E/O combinations stay literal: %EB is not a valid conversion.
+    new_ucmd!()
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .args(&["-d", "1999-06-01", "+%EB"])
+        .succeeds()
+        .stdout_is("%EB\n");
+    // %% consumes the escape, so %%EY renders as literal %EY.
+    new_ucmd!()
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .args(&["-d", "1999-06-01", "+%%EY"])
+        .succeeds()
+        .stdout_is("%EY\n");
+}
+
+#[test]
+fn test_date_eo_with_width_flags() {
+    // E/O modifiers combine with width/flags.
+    new_ucmd!()
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .args(&["-d", "1999-06-01", "+%_10EY"])
+        .succeeds()
+        .stdout_is("      1999\n");
+    new_ucmd!()
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .args(&["-d", "1999-06-01", "+%010Od"])
+        .succeeds()
+        .stdout_is("0000000001\n");
 }
 
 // Tests for --debug flag
