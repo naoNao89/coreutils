@@ -3781,6 +3781,36 @@ fn test_date_eo_with_width_flags() {
             .succeeds()
             .stdout_is(expected);
     }
+    // Conflicting padding flags: GNU applies last-flag-wins, verified
+    // against GNU date 9.7 (TZ=UTC, LC_ALL=C, -d 1999-06-01).
+    for (format, expected) in [
+        ("%-010O:z", "0000000%O:\n"),
+        ("%0-10O:z", "%O:\n"),
+        ("%0_10O:z", "       %O:\n"),
+        ("%_010O:z", "0000000%O:\n"),
+        ("%+10O:z", "0000000%O:\n"),
+    ] {
+        new_ucmd!()
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C")
+            .args(&["-d", "1999-06-01", &format!("+{format}")])
+            .succeeds()
+            .stdout_is(expected);
+    }
+}
+
+#[test]
+fn test_date_eo_literal_width_cap_fails_gracefully() {
+    // Absurd widths on the `%O:` literal must fail with an error, never
+    // abort or OOM: the shared composite formatter caps allocation.
+    for format in ["+%999999999999999999O:z", "+%70000O:z"] {
+        new_ucmd!()
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C")
+            .args(&["-d", "1999-06-01", format])
+            .fails()
+            .code_is(1);
+    }
 }
 
 // Tests for --debug flag
