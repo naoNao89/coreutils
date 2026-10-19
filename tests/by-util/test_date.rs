@@ -3704,6 +3704,20 @@ fn test_date_eo_differential_gnu() {
         }
     }
     formats.extend(["%E:z", "%E::z", "%E:::z", "%O:z", "%O::z", "%O:::z"].map(str::to_string));
+    // Flags/width variants: the bare-pair sweep above cannot catch padding bugs.
+    formats.extend(
+        [
+            "%_10EY",
+            "%010Od",
+            "%10O:z",
+            "%_4O:z",
+            "%010O:::z",
+            "%-10O::z",
+            "%5Y",
+            "%-d",
+        ]
+        .map(str::to_string),
+    );
 
     let mut mismatches = Vec::new();
     for format in &formats {
@@ -3752,6 +3766,21 @@ fn test_date_eo_with_width_flags() {
         .args(&["-d", "1999-06-01", "+%010Od"])
         .succeeds()
         .stdout_is("0000000001\n");
+    // GNU pads the `%O:` literal like a string (space default, `0` for
+    // zero pad, `-` for no pad), verified against GNU date 9.7.
+    for (format, expected) in [
+        ("%10O:z", "       %O:\n"),
+        ("%_4O:z", " %O:\n"),
+        ("%010O:::z", "0000000%O:\n"),
+        ("%-10O::z", "%O:\n"),
+    ] {
+        new_ucmd!()
+            .env("TZ", "UTC")
+            .env("LC_ALL", "C")
+            .args(&["-d", "1999-06-01", &format!("+{format}")])
+            .succeeds()
+            .stdout_is(expected);
+    }
 }
 
 // Tests for --debug flag

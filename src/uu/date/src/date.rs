@@ -1380,12 +1380,24 @@ fn format_date_with_locale_aware_months(
                 i += parsed.len;
                 continue;
             };
-            // GNU renders every `%O` colon-timezone form as literal `%O:`
-            // (`%O:z`, `%O::z` and `%O:::z` all give `%O:`). Escape the `%`
-            // so jiff copies it through verbatim. (The parser above only
-            // lets colon specs through for `z`, so this is always one.)
+            // GNU renders every `%O` colon-timezone form as the literal `%O:`
+            // (`%O:z`, `%O::z` and `%O:::z` all give `%O:`) and pads it like
+            // a string: space by default, zero with the `0` flag, nothing
+            // with `-`. (The shared `apply_modifiers` would default to zero
+            // padding for the `:z` spec, so the literal is padded here.)
+            // Escape the `%` so jiff copies it through verbatim. (The parser
+            // above only lets colon specs through for `z`, so this is one.)
             if modifier == 'O' && parsed.spec.starts_with(':') {
-                eo_resolved.push_str("%%O:");
+                let mut lit = String::from("%O:");
+                if !parsed.flags.contains('-') {
+                    if let Some(w) = parsed.width {
+                        if w > lit.len() {
+                            let pad = if parsed.flags.contains('0') { '0' } else { ' ' };
+                            lit = format!("{}{lit}", pad.to_string().repeat(w - lit.len()));
+                        }
+                    }
+                }
+                eo_resolved.push_str(&lit.replace('%', "%%"));
                 i += parsed.len;
                 continue;
             }
