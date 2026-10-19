@@ -310,9 +310,9 @@ pub fn resolve_eo_conversion(modifier: char, spec: char, date: JiffDate) -> Opti
             let iso_date = Date::<Iso>::convert_from(date);
             format_with!(MONTH_LONG, &iso_date)
         }
-        ('O', 'd' | 'e' | 'H' | 'I' | 'm' | 'M' | 'S' | 'u' | 'U' | 'V' | 'w' | 'W' | 'y') => None,
-        // Anything else: no substitute. The caller decides via the parser's
-        // validity table whether to use the base conversion or stay literal.
+        // `%O` numerics and anything else: no substitute. The caller decides
+        // via the parser's validity table whether to use the base conversion
+        // or stay literal.
         _ => None,
     }
 }
