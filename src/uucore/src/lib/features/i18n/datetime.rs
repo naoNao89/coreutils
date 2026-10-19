@@ -273,8 +273,14 @@ fn get_locale_months_inner() -> Option<[Vec<u8>; 12]> {
 /// Resolves E/O locale conversions.
 /// Returns `None` when the caller should use the base conversion.
 ///
+/// Scope: E/O *parsing* plus C-locale fallback only.
 /// Era names and alternative digits are not implemented yet.
 /// `%EC`/`%Ey` use calendar-year arithmetic instead of locale eras.
+///
+/// TODO (full POSIX scope, see #10958): era names and year-of-era from ICU
+/// era data with `u-ca` calendar selection (not prefix matching); `%O`
+/// alternative digits from locale numbering systems; standalone-month proof
+/// for `%OB` against ru/pl/lt; differential tests versus GNU for ja/th/fa/ru.
 pub fn resolve_eo_conversion(modifier: char, spec: char, date: JiffDate) -> Option<String> {
     match (modifier, spec) {
         ('E', 'Y' | 'y' | 'C') => {
