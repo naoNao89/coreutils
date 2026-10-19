@@ -321,7 +321,6 @@ fn format_with_modifiers(
             }
         }
 
-        // Pass-through: copy a single UTF-8 code point unchanged.
         let ch_len = format_string[i..].chars().next().map_or(1, char::len_utf8);
         result.push_str(&format_string[i..i + ch_len]);
         i += ch_len;
