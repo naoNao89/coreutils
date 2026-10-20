@@ -1335,102 +1335,117 @@ fn format_date_with_locale_aware_months(
     // numerics) is stripped to the base `%spec` for jiff -- never true era or
     // numeral-system formatting, see `resolve_eo_conversion`. `%%` is always
     // copied as `%%` so jiff emits a literal `%` (e.g. `%%EY` -> `%EY`).
-    let mut eo_resolved = String::with_capacity(format_string.len());
+    // Fast path: without any `E`/`O` byte the resolving scan below copies
+    // its input verbatim, so skip the allocation and the scan entirely.
+    // (The scan only diverts on `E`/`O`: valid pairs resolve, invalid ones
+    // get their `%` escaped; everything else is copied byte-for-byte.)
+    let eo_scan: Option<String> = if format_string
+        .as_bytes()
+        .iter()
+        .any(|&b| b == b'E' || b == b'O')
     {
-        let bytes = format_string.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] != b'%' {
-                let ch_len = format_string[i..].chars().next().map_or(1, char::len_utf8);
-                eo_resolved.push_str(&format_string[i..i + ch_len]);
-                i += ch_len;
-                continue;
-            }
-            // `%%` is a literal percent: keep it escaped for the later jiff
-            // pass and never resolve inside it.
-            if bytes.get(i + 1) == Some(&b'%') {
-                eo_resolved.push_str("%%");
-                i += 2;
-                continue;
-            }
-            let Some(parsed) = format_modifiers::parse_format_spec(&format_string[i..]) else {
-                // Not a valid conversion. An `E`/`O` sitting where the locale
-                // modifier belongs means an invalid pair (e.g. `%EB`, `%Ej`):
-                // escape the `%` so jiff keeps the sequence literal. Anything
-                // else preserves the historical pass-through behavior.
-                let mut j = i + 1;
-                while bytes.get(j).is_some_and(|b| b"_0^#+-".contains(b)) {
-                    j += 1;
+        let mut eo_resolved = String::with_capacity(format_string.len());
+        {
+            let bytes = format_string.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] != b'%' {
+                    let ch_len = format_string[i..].chars().next().map_or(1, char::len_utf8);
+                    eo_resolved.push_str(&format_string[i..i + ch_len]);
+                    i += ch_len;
+                    continue;
                 }
-                while bytes.get(j).is_some_and(u8::is_ascii_digit) {
-                    j += 1;
-                }
-                if matches!(bytes.get(j), Some(b'E' | b'O')) {
+                // `%%` is a literal percent: keep it escaped for the later jiff
+                // pass and never resolve inside it.
+                if bytes.get(i + 1) == Some(&b'%') {
                     eo_resolved.push_str("%%");
-                } else {
-                    eo_resolved.push('%');
+                    i += 2;
+                    continue;
                 }
-                i += 1;
-                continue;
-            };
-            let Some(modifier) = parsed.locale_modifier else {
-                // Ordinary conversion without E/O: leave verbatim for the
-                // month/day localization, epoch fix, and GNU/jiff stages.
-                eo_resolved.push_str(&format_string[i..i + parsed.len]);
-                i += parsed.len;
-                continue;
-            };
-            // GNU renders every `%O` colon-timezone form as the literal `%O:`
-            // (`%O:z`, `%O::z` and `%O:::z` all give `%O:`). Pad it with the
-            // shared composite formatter: last-flag-wins (`-`, `_`, `0`,
-            // `+`), allocation-capped width. Escape the `%` so jiff copies
-            // it through verbatim. (The parser above only lets colon specs
-            // through for `z`, so this is always one.)
-            if modifier == 'O' && parsed.spec.starts_with(':') {
-                let padded = format_modifiers::apply_composite_modifiers("%O:", &parsed)
-                    .map_err(|e| e.to_string())?;
-                eo_resolved.push_str(&padded.replace('%', "%%"));
-                i += parsed.len;
-                continue;
-            }
-            #[cfg(not(feature = "i18n-datetime"))]
-            let _ = modifier;
-            // Push the base conversion (`%[flags][width]spec`) for jiff.
-            let push_base = |out: &mut String| {
-                out.push('%');
-                out.push_str(parsed.flags);
-                if let Some(w) = parsed.width {
-                    out.push_str(&w.to_string());
-                }
-                out.push_str(parsed.spec);
-            };
-            #[cfg(feature = "i18n-datetime")]
-            if skip_localization {
-                // ICU off: strip the modifier to the base conversion.
-                push_base(&mut eo_resolved);
-            } else if let Some(raw) = resolve_eo_conversion(
-                modifier,
-                parsed.spec.chars().last().unwrap_or(modifier),
-                date.date(),
-            ) {
-                // ICU provided a substitute: apply the existing GNU
-                // flags/width to the raw value, then escape it so later
-                // stages copy it through untouched.
-                let padded = if parsed.flags.is_empty() && parsed.width.is_none() {
-                    raw
-                } else {
-                    format_modifiers::apply_modifiers(&raw, &parsed).map_err(|e| e.to_string())?
+                let Some(parsed) = format_modifiers::parse_format_spec(&format_string[i..]) else {
+                    // Not a valid conversion. An `E`/`O` sitting where the locale
+                    // modifier belongs means an invalid pair (e.g. `%EB`, `%Ej`):
+                    // escape the `%` so jiff keeps the sequence literal. Anything
+                    // else preserves the historical pass-through behavior.
+                    let mut j = i + 1;
+                    while bytes.get(j).is_some_and(|b| b"_0^#+-".contains(b)) {
+                        j += 1;
+                    }
+                    while bytes.get(j).is_some_and(u8::is_ascii_digit) {
+                        j += 1;
+                    }
+                    if matches!(bytes.get(j), Some(b'E' | b'O')) {
+                        eo_resolved.push_str("%%");
+                    } else {
+                        eo_resolved.push('%');
+                    }
+                    i += 1;
+                    continue;
                 };
-                eo_resolved.push_str(&padded.replace('%', "%%"));
-            } else {
-                // Standard E/O fallback: format the base `%spec` via jiff.
+                let Some(modifier) = parsed.locale_modifier else {
+                    // Ordinary conversion without E/O: leave verbatim for the
+                    // month/day localization, epoch fix, and GNU/jiff stages.
+                    eo_resolved.push_str(&format_string[i..i + parsed.len]);
+                    i += parsed.len;
+                    continue;
+                };
+                // GNU renders every `%O` colon-timezone form as the literal `%O:`
+                // (`%O:z`, `%O::z` and `%O:::z` all give `%O:`). Pad it with the
+                // shared composite formatter: last-flag-wins (`-`, `_`, `0`,
+                // `+`), allocation-capped width. Escape the `%` so jiff copies
+                // it through verbatim. (The parser above only lets colon specs
+                // through for `z`, so this is always one.)
+                if modifier == 'O' && parsed.spec.starts_with(':') {
+                    let padded = format_modifiers::apply_composite_modifiers("%O:", &parsed)
+                        .map_err(|e| e.to_string())?;
+                    eo_resolved.push_str(&padded.replace('%', "%%"));
+                    i += parsed.len;
+                    continue;
+                }
+                #[cfg(not(feature = "i18n-datetime"))]
+                let _ = modifier;
+                // Push the base conversion (`%[flags][width]spec`) for jiff.
+                let push_base = |out: &mut String| {
+                    out.push('%');
+                    out.push_str(parsed.flags);
+                    if let Some(w) = parsed.width {
+                        out.push_str(&w.to_string());
+                    }
+                    out.push_str(parsed.spec);
+                };
+                #[cfg(feature = "i18n-datetime")]
+                if skip_localization {
+                    // ICU off: strip the modifier to the base conversion.
+                    push_base(&mut eo_resolved);
+                } else if let Some(raw) = resolve_eo_conversion(
+                    modifier,
+                    parsed.spec.chars().last().unwrap_or(modifier),
+                    date.date(),
+                ) {
+                    // ICU provided a substitute: apply the existing GNU
+                    // flags/width to the raw value, then escape it so later
+                    // stages copy it through untouched.
+                    let padded = if parsed.flags.is_empty() && parsed.width.is_none() {
+                        raw
+                    } else {
+                        format_modifiers::apply_modifiers(&raw, &parsed)
+                            .map_err(|e| e.to_string())?
+                    };
+                    eo_resolved.push_str(&padded.replace('%', "%%"));
+                } else {
+                    // Standard E/O fallback: format the base `%spec` via jiff.
+                    push_base(&mut eo_resolved);
+                }
+                #[cfg(not(feature = "i18n-datetime"))]
                 push_base(&mut eo_resolved);
+                i += parsed.len;
             }
-            #[cfg(not(feature = "i18n-datetime"))]
-            push_base(&mut eo_resolved);
-            i += parsed.len;
         }
-    }
+        Some(eo_resolved)
+    } else {
+        None
+    };
+    let scan_input: &str = eo_scan.as_deref().unwrap_or(format_string);
 
     // Apply locale-aware name substitution (month/day names) before modifier
     // processing, so that formats like "%-e" don't bypass localization of "%b"/"%A".
@@ -1438,11 +1453,11 @@ fn format_date_with_locale_aware_months(
     // rest of the function without a dangling reference.
     #[cfg(feature = "i18n-datetime")]
     let localized: Option<String> = (!skip_localization && should_use_icu_locale())
-        .then(|| localize_format_string(&eo_resolved, date.date()));
+        .then(|| localize_format_string(scan_input, date.date()));
     #[cfg(feature = "i18n-datetime")]
-    let fmt: &str = localized.as_deref().unwrap_or(eo_resolved.as_str());
+    let fmt: &str = localized.as_deref().unwrap_or(scan_input);
     #[cfg(not(feature = "i18n-datetime"))]
-    let fmt: &str = eo_resolved.as_str();
+    let fmt: &str = scan_input;
 
     // jiff renders `%s` by truncating toward zero, but GNU `date` floors toward
     // negative infinity (e.g. `@-1.5` → `-2`, not `-1`). Every other field jiff
