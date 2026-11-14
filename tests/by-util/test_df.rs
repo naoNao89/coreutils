@@ -1233,3 +1233,61 @@ df: invalid suffix in --block-size argument '1fb'
             .stderr_is("df: invalid suffix in --block-size argument '1fb'\n");
     }
 }
+
+/// Windows only: `df` must report the space available to the caller.
+///
+/// Regression test for issue #7461: `FsUsage::new` set `bavail` to 0 on
+/// Windows, so every volume printed `Avail = 0` and `Use% = 100%`.
+///
+/// The precondition is established rather than assumed: a volume that accepted
+/// 2 MiB from this process had at least that much available to the caller, and
+/// the probe is removed again before `df` runs, so a volume that was exactly as
+/// full as the probe cannot make the assertion fail. 2 MiB also clears the
+/// default 1 KiB block granularity of `df --output`.
+#[test]
+#[cfg(windows)]
+fn test_windows_avail_is_reported() {
+    let dir = std::env::temp_dir().join("uutils-df-avail");
+    std::fs::create_dir_all(&dir).unwrap();
+    let probe = dir.join("probe");
+    // `false` when the volume is too full to prove anything about `Avail`.
+    let proved_available = match std::fs::write(&probe, vec![0u8; 2 * 1024 * 1024]) {
+        Ok(()) => {
+            std::fs::remove_file(&probe).unwrap();
+            true
+        }
+        Err(err) => {
+            eprintln!("skipping the Avail assertion: cannot write 2 MiB to {dir:?}: {err}");
+            false
+        }
+    };
+
+    let output = new_ucmd!()
+        .args(&["--output=source,size,used,avail,pcent"])
+        .arg(&dir)
+        .succeeds();
+    let stdout = output.stdout_move_str();
+
+    let row = stdout
+        .lines()
+        .nth(1)
+        .unwrap_or_else(|| panic!("no row for the volume holding {dir:?}:\n{stdout}"));
+    let fields: Vec<&str> = row.split_whitespace().collect();
+    assert_eq!(fields.len(), 5, "unexpected row: {row}");
+    let size: u64 = fields[1].parse().expect("size is a number");
+    let used: u64 = fields[2].parse().expect("used is a number");
+    let avail: u64 = fields[3].parse().expect("avail is a number");
+
+    assert!(size > 0, "size must be positive: {row}");
+    assert!(
+        used + avail <= size,
+        "used + avail must not exceed size: {row}"
+    );
+    assert!(fields[4].ends_with('%'), "Use% must be a percentage: {row}");
+    if proved_available {
+        assert!(
+            avail > 0,
+            "2 MiB were available to this caller on this volume, so avail must not be 0: {row}"
+        );
+    }
+}
