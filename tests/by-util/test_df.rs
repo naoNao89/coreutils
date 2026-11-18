@@ -1233,3 +1233,72 @@ df: invalid suffix in --block-size argument '1fb'
             .stderr_is("df: invalid suffix in --block-size argument '1fb'\n");
     }
 }
+
+/// Windows only: `df` must report the space available to the caller.
+///
+/// Regression test for issue #7461: `FsUsage::new` set `bavail` to 0 on
+/// Windows, so every volume printed `Avail = 0` and `Use% = 100%`. The
+/// backend was fixed in #14455 (`GetDiskFreeSpaceExW` +
+/// `lpFreeBytesAvailableToCaller`); nothing else in the suite asserts that
+/// `Avail` is ever non-zero.
+///
+/// The precondition is established rather than assumed: a volume that
+/// accepted a 2 MiB probe from this process had at least that much space
+/// available to the caller, and the probe is removed again before `df`
+/// runs, so a volume that was exactly as full as the probe cannot make the
+/// assertion fail. 2 MiB also clears the default 1 KiB block granularity
+/// of `df --output`.
+///
+/// If the probe cannot be written because the volume is full
+/// (`ErrorKind::StorageFull`), the `avail > 0` assertion cannot be made and
+/// only the invariants are checked; any other write failure fails the test.
+#[test]
+#[cfg(windows)]
+fn test_windows_avail_is_reported() {
+    // A fresh temporary directory: the probe path must not collide with a
+    // concurrent test run, and the directory is removed when the test ends.
+    let dir = tempfile::tempdir().expect("create a temporary directory");
+    let probe = dir.path().join("probe");
+    // `false` only when the volume is too full to prove anything about `Avail`.
+    let proved_available = match std::fs::write(&probe, vec![0u8; 2 * 1024 * 1024]) {
+        Ok(()) => {
+            std::fs::remove_file(&probe).unwrap();
+            true
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::StorageFull => {
+            eprintln!("skipping the Avail assertion: the volume is full: {err}");
+            false
+        }
+        Err(err) => panic!("cannot write the 2 MiB probe to {dir:?}: {err}"),
+    };
+
+    // Numeric-only columns (as in `test_total`): the row is a single line of
+    // numbers, so no filesystem-name whitespace can confuse the parse.
+    let output = new_ucmd!()
+        .args(&["--output=size,used,avail"])
+        .arg(dir.path())
+        .succeeds();
+    let stdout = output.stdout_move_str();
+
+    let row = stdout
+        .lines()
+        .nth(1)
+        .unwrap_or_else(|| panic!("no row for the volume holding {dir:?}:\n{stdout}"));
+    let fields: Vec<&str> = row.split_whitespace().collect();
+    assert_eq!(fields.len(), 3, "unexpected row: {row}");
+    let size: u64 = fields[0].parse().expect("size is a number");
+    let used: u64 = fields[1].parse().expect("used is a number");
+    let avail: u64 = fields[2].parse().expect("avail is a number");
+
+    assert!(size > 0, "size must be positive: {row}");
+    assert!(
+        used + avail <= size,
+        "used + avail must not exceed size: {row}"
+    );
+    if proved_available {
+        assert!(
+            avail > 0,
+            "2 MiB were available to this caller on this volume, so avail must not be 0: {row}"
+        );
+    }
+}
