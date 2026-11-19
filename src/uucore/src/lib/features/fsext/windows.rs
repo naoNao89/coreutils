@@ -68,7 +68,7 @@ impl FsUsage {
             blocksize,
             blocks: space.total / blocksize,
             bfree: space.free / blocksize,
-            bavail: space.available / blocksize,
+            bavail: 0, // MUTANT (negative control): pre-#14455 code hardcoded bavail to 0
             bavail_top_bit_set: false,
             files: 0,
             ffree: 0,
